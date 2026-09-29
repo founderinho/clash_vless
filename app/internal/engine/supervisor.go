@@ -286,12 +286,28 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	for {
 		s.syncRunners(ctx) // one failover runner per enabled slot, on its own port
 		s.syncTun(ctx)     // bring TUN up/down to match config (attaches to the TUN slot)
+		s.healStaleDNS()   // clear a stale LAN resolver stranded by a prior network/TUN session
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-s.kick:
 		case <-time.After(s.interval()):
 		}
+	}
+}
+
+// healStaleDNS clears a stale LAN resolver left pinned in the OS network config (a
+// real-net TUN session on a PREVIOUS network, or an unclean daemon exit that skipped
+// the DNS restore) so a network change can't strand every lookup — the "connected to
+// a different network and nothing resolves, tunnel/proxy DOWN" symptom. Runs each
+// cycle ONLY while TUN is OFF; when TUN is up, tunUp/ReapplyDNS own the resolver, so
+// touching it here would fight them. macOS-only in effect (see tun.HealStaleResolver).
+func (s *Supervisor) healStaleDNS() {
+	if s.tunOn {
+		return
+	}
+	if healed, desc := tun.HealStaleResolver(); healed {
+		s.logf("DNS: cleared a stale resolver (%s) left from a network change or TUN session — reverted to DHCP", desc)
 	}
 }
 

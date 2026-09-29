@@ -177,6 +177,31 @@ func (m *Manager) ReapplyDNS(staticResolver string, direct bool) error {
 	return m.osReapplyDNS(staticResolver, direct)
 }
 
+// staleLANResolvers returns the configured (statically pinned) resolvers that are
+// LAN addresses (RFC1918 / link-local) the current DHCP lease does NOT offer — i.e.
+// stranded from a previous network. A public resolver the user pinned on purpose
+// (e.g. 1.1.1.1) is never returned: it works on any network, so it isn't a landmine.
+// Pure helper for HealStaleResolver so the decision is unit-testable.
+func staleLANResolvers(configured, dhcp []string) []string {
+	have := make(map[string]bool, len(dhcp))
+	for _, d := range dhcp {
+		if ip := net.ParseIP(d); ip != nil {
+			have[ip.String()] = true
+		}
+	}
+	var stale []string
+	for _, c := range configured {
+		ip := net.ParseIP(c)
+		if ip == nil || ip.To4() == nil {
+			continue
+		}
+		if (ip.IsPrivate() || ip.IsLinkLocalUnicast()) && !have[ip.String()] {
+			stale = append(stale, ip.String())
+		}
+	}
+	return stale
+}
+
 // replaceResolverIP returns ips with any entry equal to old removed and new
 // appended — keeps Config.ServerIPs (exit IPs + the real-net resolver bypass) in
 // sync when the resolver changes, so a later Reapply reinstalls the right one.

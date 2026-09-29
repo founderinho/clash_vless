@@ -257,6 +257,10 @@ func (m *Manager) osReapplyDNS(staticResolver string, direct bool) error {
 // currentDHCPResolver is unimplemented on Windows (real-net re-detect n/a).
 func currentDHCPResolver(string) string { return "" }
 
+// HealStaleResolver is macOS-only (Windows sets DNS on the tun adapter, which goes
+// away with the device — no persistent service pin to strand). See tun_darwin.go.
+func HealStaleResolver() (bool, string) { return false, "" }
+
 // captureIntact reports whether both default-capture halves are present in the
 // routing table (`route print` shows a 0.0.0.0 and a 128.0.0.0 dest, each with a
 // 128.0.0.0 mask).

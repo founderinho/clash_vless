@@ -238,6 +238,17 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
       Without this it read the resolv.conf **we already overwrote** with our own injected resolver when the DNS
       mode was toggled while TUN was up — so real-net would re-adopt e.g. `8.8.8.8` and label it "your LAN
       resolver" instead of the actual gateway (`192.168.1.1`). The DHCP lease is the ground truth regardless.
+  - **Stale-resolver self-heal** (`tun.HealStaleResolver`, `engine.healStaleDNS`, **macOS-only**): real-net on
+    macOS pins a resolver into the persistent **Wi-Fi service DNS** (`networksetup -setdnsservers`). That pin
+    **outlives the daemon and the network** — a network switch (macOS keeps the static entry; on the new net it's
+    dead) or an **unclean daemon exit** (SIGKILL → `restoreDNS` never runs) strands it, and with **TUN off** the
+    watchdog isn't running to fix it → **every lookup fails, all exits DOWN** ("connected to a different network
+    and nothing works", while `scutil` shows an old-net resolver). So the supervisor loop calls `healStaleDNS`
+    **each cycle while TUN is OFF** (when TUN is up, `tunUp`/`ReapplyDNS` own the resolver): it clears the service
+    back to **DHCP-auto** iff a pinned server is a **private/link-local IP the current DHCP lease does NOT offer**
+    (`staleLANResolvers`, unit-tested) — a stranded LAN resolver. A **public** resolver the user pinned on purpose
+    (e.g. `1.1.1.1`) works on any network, so it's never touched. Linux/Windows are no-ops (per-link resolvectl /
+    tun-adapter DNS die with the device — no persistent pin to strand).
 
     IPv4 only (IPv6 isn't tunneled) — see IPv6 block. Needs root/admin.
   - **IPv6 block** (`store.TunBlockIPv6()`, default **on**; `TunAllowIPv6`=false; toggle `tun ipv6 block|allow`,

@@ -354,14 +354,15 @@ func (m *Manager) osReapplyDNS(staticResolver string, direct bool) error {
 	return nil
 }
 
-// currentDHCPResolver returns the DNS server the current DHCP lease on dev hands
-// out, read straight from the lease (`ipconfig getpacket`) so it's immune to the
-// manual service-DNS override TUN installed. "" if none / not DHCP.
-func currentDHCPResolver(dev string) string {
+// dhcpResolvers returns the DNS servers the current DHCP lease on dev hands out,
+// read straight from the lease (`ipconfig getpacket`) so it's immune to any manual
+// service-DNS override TUN installed. Empty if none / not DHCP.
+func dhcpResolvers(dev string) []string {
 	out, err := exec.Command("ipconfig", "getpacket", dev).Output()
 	if err != nil {
-		return ""
+		return nil
 	}
+	var ips []string
 	for _, ln := range strings.Split(string(out), "\n") {
 		if !strings.Contains(ln, "domain_name_server") {
 			continue
@@ -376,11 +377,53 @@ func currentDHCPResolver(dev string) string {
 		}
 		for _, tok := range strings.FieldsFunc(body, func(r rune) bool { return r == ',' || r == ' ' }) {
 			if ip := net.ParseIP(strings.TrimSpace(tok)); ip != nil && ip.To4() != nil && !ip.IsLoopback() {
-				return ip.String()
+				ips = append(ips, ip.String())
 			}
 		}
 	}
+	return ips
+}
+
+// currentDHCPResolver returns the first DNS server from the current DHCP lease on
+// dev, immune to a service-DNS override we installed. "" if none / not DHCP.
+func currentDHCPResolver(dev string) string {
+	if r := dhcpResolvers(dev); len(r) > 0 {
+		return r[0]
+	}
 	return ""
+}
+
+// HealStaleResolver clears a stale LAN resolver left pinned in the primary network
+// service's DNS — a private-range server the current network's DHCP lease does NOT
+// offer, i.e. a leftover from a real-net TUN session on a PREVIOUS network (or an
+// unclean daemon exit that skipped the restore). On the new network that resolver is
+// dead, so every lookup fails until it's cleared; setting the service back to
+// DHCP-auto ("Empty") lets macOS use the network's own resolver. A public resolver
+// the user set on purpose (e.g. 1.1.1.1) is left alone — it works on any network, so
+// it's not a landmine. Returns whether it acted + the cleared servers, for logging.
+// The daemon calls this each cycle while TUN is OFF (when TUN owns DNS, the watchdog
+// handles re-pointing instead). No-op off macOS.
+func HealStaleResolver() (bool, string) {
+	_, dev, err := defaultRoute()
+	if err != nil || dev == "" {
+		return false, ""
+	}
+	svc := primaryService(dev)
+	if svc == "" {
+		return false, ""
+	}
+	out, err := exec.Command("networksetup", "-getdnsservers", svc).Output()
+	if err != nil || strings.Contains(string(out), "aren't any") {
+		return false, "" // already DHCP-auto — nothing pinned to go stale
+	}
+	stale := staleLANResolvers(strings.Fields(string(out)), dhcpResolvers(dev))
+	if len(stale) == 0 {
+		return false, ""
+	}
+	if err := exec.Command("networksetup", "-setdnsservers", svc, "Empty").Run(); err != nil {
+		return false, ""
+	}
+	return true, strings.Join(stale, ",") + " on " + svc
 }
 
 func (m *Manager) restoreDNS() {

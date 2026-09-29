@@ -386,6 +386,12 @@ func (m *Manager) osReapplyDNS(staticResolver string, direct bool) error {
 	return nil
 }
 
+// HealStaleResolver is a no-op on Linux: real-net DNS goes through systemd-resolved
+// per-link (`resolvectl dns <tun>`), which the kernel reverts when the tun device
+// dies, so there's no persistent service-DNS pin to strand on a network change (the
+// macOS `networksetup` landmine this heals). See tun_darwin.go.
+func HealStaleResolver() (bool, string) { return false, "" }
+
 // currentDHCPResolver returns the DNS server the current network hands out for
 // dev via systemd-resolved's per-link view (`resolvectl dns <dev>`), which keeps
 // the DHCP upstream even after we clobbered the global resolv.conf. "" if none.

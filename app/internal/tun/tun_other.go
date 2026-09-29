@@ -40,3 +40,6 @@ func (m *Manager) osReapply() error { return nil }
 func (m *Manager) osReapplyDNS(string, bool) error { return nil }
 
 func currentDHCPResolver(string) string { return "" }
+
+// HealStaleResolver is macOS-only (see tun_darwin.go).
+func HealStaleResolver() (bool, string) { return false, "" }
