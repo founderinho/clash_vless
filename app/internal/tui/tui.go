@@ -938,6 +938,8 @@ func slotLiveLabel(s engine.SlotStatus) string {
 		return okStyle.Render("T1") + " " + trunc(s.Main, 14)
 	case s.Tier >= 2:
 		return okStyle.Render(fmt.Sprintf("T%d", s.Tier)) + " " + trunc(s.Entry, 10) + "→" + trunc(s.Main, 12)
+	case s.HopOnly:
+		return warnStyle.Render("hop") + " " + trunc(s.Main, 12)
 	case s.Err != "":
 		return badStyle.Render("down")
 	default:
@@ -1167,6 +1169,9 @@ func (m *model) clampRow(n int) {
 func activeLine(s engine.Status) string {
 	switch s.Tier {
 	case 0:
+		if s.HopOnly {
+			return warnStyle.Render("⚠ HOP-ONLY") + "  " + dimStyle.Render("main down — first hop "+mainLabel(s.Main)+" still up")
+		}
 		msg := s.Err
 		if msg == "" {
 			msg = "starting…"

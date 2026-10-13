@@ -37,10 +37,11 @@ type SlotStatus struct {
 	Tier   int    // 1/2/3 = active tier; 0 = down
 	Entry  string // entry node name ("" for T1 direct)
 	Main   string // active final-exit main name
-	Egress time.Duration
-	Err    string
-	Note   string
-	IsTun  bool // this slot is the one the TUN bridge attaches to
+	Egress  time.Duration
+	Err     string
+	Note    string
+	IsTun   bool // this slot is the one the TUN bridge attaches to
+	HopOnly bool // main is down; only the first-hop entry port is still served
 }
 
 // Status is an immutable snapshot of supervisor state handed to the UI. The
@@ -55,6 +56,7 @@ type Status struct {
 	Egress    time.Duration
 	Err       string
 	Note      string // hysteresis hint, e.g. "↑ T1 available (2/3)"
+	HopOnly   bool   // primary slot's main is down but its first-hop port still serves
 	TunErr    string // TUN bring-up error, if any
 	Slots     []SlotStatus
 	Country   []Probe
@@ -134,15 +136,17 @@ type slotRunner struct {
 	upStreak    int
 	failStreak  int
 	liveBySpeed bool // current auto pick is throughput-backed (else a cold-start ping pick, upgraded once speed lands)
+	hopOnly     bool // live instance serves only the first-hop entry port (main down)
 }
 
 type plan struct {
-	tier   int
-	entry  *store.Node
-	main   string
-	config []byte
-	egress time.Duration
-	key    string
+	tier    int
+	entry   *store.Node
+	main    string
+	config  []byte
+	egress  time.Duration
+	key     string
+	hopOnly bool // serves only the first-hop entry port (main down) — not a full chain
 }
 
 // NewSupervisor builds a supervisor. onChange (may be nil) receives a fresh
@@ -646,27 +650,96 @@ func (r *slotRunner) cycle(ctx context.Context) {
 
 	// Current chain is down (or nothing running yet).
 	r.upStreak = 0
-	r.failStreak++
-	if !hasLive || r.failStreak >= r.sup.downThresh() {
-		if best, ok := r.bestWorking(ctx, directOB, hopOB, lo, hi); ok {
-			if e := r.apply(best); e != nil {
-				r.logf("apply %s failed: %v", best.key, e)
-				r.emit(0, "", 0, e.Error(), "")
-				return
-			}
-			r.failStreak = 0
-			r.liveBySpeed = r.speedBacked(best)
-			r.logf("→ %s  egress %dms", best.key, best.egress.Milliseconds())
-			r.emitPlan(best, "")
+
+	// An entry-only fallback (main down, first hop still serving) is not a live
+	// MAIN chain, so it gets no blip tolerance — we immediately re-attempt a full
+	// chain. A real live chain tolerates DownThreshold failures before switching.
+	r.mu.Lock()
+	servingHopOnly := r.hopOnly
+	liveKey := r.liveKey
+	r.mu.Unlock()
+
+	if hasLive && !servingHopOnly {
+		r.failStreak++
+		if r.failStreak < r.sup.downThresh() {
+			// Tolerate a transient blip before switching away.
+			r.logf("current chain failing (%d/%d)…", r.failStreak, r.sup.downThresh())
+			r.emit(curTier, curEntry, 0, "", fmt.Sprintf("current failing (%d/%d)…", r.failStreak, r.sup.downThresh()))
 			return
 		}
-		r.logf("✖ all tiers unreachable")
-		r.emit(0, "", 0, "no main reachable — direct nor via any hop", "")
+	}
+
+	if best, ok := r.bestWorking(ctx, directOB, hopOB, lo, hi); ok {
+		if e := r.apply(best); e != nil {
+			r.logf("apply %s failed: %v", best.key, e)
+			r.emit(0, "", 0, e.Error(), "")
+			return
+		}
+		r.failStreak = 0
+		r.liveBySpeed = r.speedBacked(best)
+		r.logf("→ %s  egress %dms", best.key, best.egress.Milliseconds())
+		r.emitPlan(best, "")
 		return
 	}
-	// Tolerate a transient blip before switching away.
-	r.logf("current chain failing (%d/%d)…", r.failStreak, r.sup.downThresh())
-	r.emit(curTier, curEntry, 0, "", fmt.Sprintf("current failing (%d/%d)…", r.failStreak, r.sup.downThresh()))
+
+	// No main exit works via any tier. Keep the first-hop port usable anyway:
+	// serve the best reachable entry node directly on the hop port, so an app
+	// pointed at it still gets out even while the slot's main is down.
+	if r.serveHopOnly(ctx, hopOB, liveKey) {
+		return
+	}
+
+	r.logf("✖ all tiers unreachable")
+	r.emit(0, "", 0, "no main reachable — direct nor via any hop", "")
+}
+
+const hopOnlyKeyPrefix = "HOP:"
+
+// serveHopOnly keeps a slot's first-hop port alive when no full main chain can
+// be built: it serves the best reachable entry node directly on the entry port,
+// so traffic pointed at the hop still egresses through the entry even though the
+// slot's own main exit is down. Only slots that actually chain (have a hop-capable
+// main) and expose a distinct hop port qualify. Sticky: if it's already serving
+// an entry whose hop port still egresses, it leaves the instance untouched.
+func (r *slotRunner) serveHopOnly(ctx context.Context, hopOB []namedOB, liveKey string) bool {
+	if r.entryPort == 0 || r.entryPort == r.mainPort || len(hopOB) == 0 {
+		return false
+	}
+
+	// Already serving a healthy entry-only fallback? Don't churn the instance.
+	if strings.HasPrefix(liveKey, hopOnlyKeyPrefix) {
+		if lat, e := EgressThroughSOCKS(ctx, r.entryPort, r.sup.timeout()); e == nil {
+			name := strings.TrimPrefix(liveKey, hopOnlyKeyPrefix)
+			r.emit(0, "", lat, "", fmt.Sprintf("⚠ main down — first hop %s still up on :%d", name, r.entryPort))
+			return true
+		}
+	}
+
+	// Best-ranked entries first: country pool (T2), then bypass (T3).
+	r.sup.mu.Lock()
+	ranked := append(append([]*store.Node(nil), r.sup.rankedCountry...), r.sup.rankedBypass...)
+	r.sup.mu.Unlock()
+
+	for _, n := range ranked {
+		if len(n.Outbound) == 0 {
+			continue
+		}
+		if lat, ok := r.sup.probe(ctx, n.Outbound, nil, r.sup.timeout()); ok {
+			cfg, err := xray.BuildConfig(r.entryPort, n.Outbound, nil, 0, r.sup.loglevel(), r.sup.listen)
+			if err != nil {
+				continue
+			}
+			p := plan{tier: 0, main: n.Name, config: cfg, egress: lat, key: hopOnlyKeyPrefix + n.Name, hopOnly: true}
+			if e := r.apply(p); e != nil {
+				continue
+			}
+			r.failStreak = 0
+			r.logf("⚠ main down — serving first hop %s only on :%d", n.Name, r.entryPort)
+			r.emit(0, "", lat, "", fmt.Sprintf("⚠ main down — first hop %s still up on :%d", n.Name, r.entryPort))
+			return true
+		}
+	}
+	return false
 }
 
 // pinnedCycle serves a specific user-pinned entry node (node → main), bypassing
@@ -1082,6 +1155,7 @@ func (r *slotRunner) apply(p plan) error {
 	}
 	r.mu.Lock()
 	r.live, r.liveKey, r.liveTier, r.liveEntry, r.liveMain = inst, p.key, p.tier, entry, p.main
+	r.hopOnly = p.hopOnly
 	r.mu.Unlock()
 	return nil
 }
@@ -1090,6 +1164,7 @@ func (r *slotRunner) stopLive() {
 	r.mu.Lock()
 	old := r.live
 	r.live, r.liveKey, r.liveTier, r.liveEntry, r.liveMain = nil, "", 0, "", ""
+	r.hopOnly = false
 	r.mu.Unlock()
 	if old != nil {
 		_ = old.Close()
@@ -1117,7 +1192,7 @@ func (r *slotRunner) emitPlan(p plan, note string) {
 // emit records this runner's latest slot status, then republishes the aggregate.
 func (r *slotRunner) emit(tier int, entry string, egress time.Duration, errStr, note string) {
 	r.mu.Lock()
-	r.ss = SlotStatus{Name: r.name, Port: r.mainPort, Tier: tier, Entry: entry, Main: r.liveMain, Egress: egress, Err: errStr, Note: note}
+	r.ss = SlotStatus{Name: r.name, Port: r.mainPort, Tier: tier, Entry: entry, Main: r.liveMain, Egress: egress, Err: errStr, Note: note, HopOnly: r.hopOnly}
 	r.mu.Unlock()
 	r.sup.publish()
 }
@@ -1181,6 +1256,7 @@ func (s *Supervisor) publish() {
 	s.status.Egress = primary.Egress
 	s.status.Err = primary.Err
 	s.status.Note = primary.Note
+	s.status.HopOnly = primary.HopOnly
 	s.status.TunErr = s.tunErrMsg
 	s.status.Slots = slots
 	s.status.UpdatedAt = time.Now()

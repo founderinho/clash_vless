@@ -193,6 +193,18 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
   and `applyDefaults` reserve both and require `p` **and** `p+1` free when assigning. Ports: default slot
   `ListenPort` (2084) + hop `+1` (2085), extra slots auto-assigned from `+2` up in steps of two
   (2086+hop 2087, 2088+hop 2089, …); egress probes use a throwaway OS-assigned port (`engine.freePort()`).
+  - **Hop stays up when the main is down** (`slotRunner.serveHopOnly`, `plan.hopOnly`/`slotRunner.hopOnly`,
+    `SlotStatus.HopOnly`): the hop port was served only *inside* a live chained config (T2/T3), so when no
+    main exit was reachable at all the whole instance (hop port included) went dark. Now, after the cascade
+    fails on **every** tier, the runner falls back to serving the **best reachable entry node directly** on
+    the hop port (`BuildConfig(entryPort, entryOB, nil, …)` — the entry as its own sole outbound), so an app
+    pointed at `Port+1` still egresses through the first hop even while the slot's main is dead. Only slots
+    that actually chain (a hop-capable, non-Vision main) and expose a distinct hop port qualify. The fallback
+    is **sticky** — while the entry port still egresses it isn't rebuilt — and it is **not** a live main
+    chain, so it gets no blip tolerance: each cycle still re-attempts a full chain (`bestWorking`) and
+    auto-upgrades the moment a main returns. State: `✖ DOWN` → `⚠ HOP-ONLY` (TUI header) / slot row `hop
+    <entry>`; truly `✖ DOWN` only when **no** entry reaches the internet either. The hop-only key is prefixed
+    `HOP:`.
 - **Force-hop** (`store.ForceHop`): skip T1 and always route through a hop (tier bounds → 2..3) —
   a quick "is any hop working?" test that keeps the hop-1 port served. `PinTier`/`PinEntry` still override.
 - **Chaining trick** (`xray.BuildConfig`): a chained `main` dials through the entry via outbound
