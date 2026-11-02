@@ -88,10 +88,12 @@ or a **system-wide TUN** — with automatic tiered failover.
   out), so every edit applies **live** to the running daemon, VPN up or not. Tabs mirror the TUI: **Status**
   (per-slot tier, pool up-counts, pins, recheck) · **Subs** (add/refetch/remove, all-vs-one mode, entry nodes
   with latency/Mbps/flake — tap to pin) · **Main** (slots + mains; tap for enable/TUN slot/port/add main/delete,
-  main enable/w-o-hop/delete) · **Log** (daemon stdout) · **Config** (tab 5: interval/timeout/thresholds/pin
+  main enable/w-o-hop/delete; an empty slot shows a tap-to-add hint — a fresh install has no mains, since the
+  sub only supplies hops and there's no wizard on Android) · **Log** (daemon stdout) · **Config** (tab 5: interval/timeout/thresholds/pin
   tier/force-hop/auto-fetch/fetch proxy/log level/allow-LAN/ICMP/**HWID** — paste one to share a panel slot).
   Slot/main edits are done Java-side on the state JSON and sent as a top-level `slots` patch (full objects —
-  the daemon's patch is a field replace).
+  the daemon's patch is a field replace; a fresh slot's `mains` is JSON `null` — a Go nil slice — so the app
+  creates the array). Edit failures go to the Log tab + a toast, never swallowed.
   Host-testable without a phone: build with a `go build -overlay` that swaps the `*_android.go` files in
   under a `linux` tag, then hand it a tun fd from `unshare -Urn` (the netns stands in for the VPN).
 - `dist/` — prebuilt release binaries (**not committed**; build artifacts).

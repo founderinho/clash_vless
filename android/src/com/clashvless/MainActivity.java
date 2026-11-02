@@ -219,6 +219,8 @@ public class MainActivity extends Activity {
             body.addView(tap(mono((name.equals(tunSlot) ? "◉ " : "○ ") + "slot \"" + name + "\" :" + sl.optInt("port")
                     + (sl.optBoolean("enabled") ? " [on]" : " [off]") + live), () -> slotActions(st, si)));
             JSONArray mains = sl.optJSONArray("mains");
+            if (mains == null || mains.length() == 0)
+                body.addView(tap(mono("    (no mains — tap to add your vless:// exit; the sub only supplies hops)"), () -> slotActions(st, si)));
             for (int m = 0; mains != null && m < mains.length(); m++) {
                 final int mi = m;
                 JSONObject mn = mains.optJSONObject(m);
@@ -266,7 +268,7 @@ public class MainActivity extends Activity {
         String hwid = dev == null ? "" : dev.optString("hwid");
         cfg("Device HWID", hwid, () -> ask("HWID (paste one from another device to share its panel slot)", hwid, InputType.TYPE_CLASS_TEXT, v -> {
             if (!v.matches("[a-zA-Z0-9=-]{10,64}")) { toast("HWID must be 10–64 chars: a-z A-Z 0-9 = -"); return; }
-            try { Ctl.patch("device", new JSONObject(dev.toString()).put("hwid", v)); } catch (Exception ignored) { }
+            try { Ctl.patch("device", new JSONObject(dev.toString()).put("hwid", v)); } catch (Exception e) { failed(e); }
         }));
         body.addView(mono("\n* applies on next Connect/Disconnect (daemon restart).\nCLI: adb shell run-as com.clashvless sh files/cv <cmd>"));
     }
@@ -297,7 +299,7 @@ public class MainActivity extends Activity {
             try {
                 slots.put(new JSONObject().put("name", name).put("port", freePort(st)).put("enabled", true).put("mains", new JSONArray()));
                 Ctl.patch("slots", slots);
-            } catch (Exception ignored) { }
+            } catch (Exception e) { failed(e); }
         });
     }
 
@@ -316,14 +318,16 @@ public class MainActivity extends Activity {
                     case 3: ask("vless:// URL", "", InputType.TYPE_TEXT_VARIATION_URI, u -> {
                         if (!u.startsWith("vless://")) { toast("need a vless:// URL"); return; }
                         try {
-                            sl.getJSONArray("mains").put(new JSONObject().put("name", mainName(u)).put("url", u)
+                            JSONArray mains = sl.optJSONArray("mains"); // a fresh slot's mains is JSON null (Go nil slice)
+                            if (mains == null) sl.put("mains", mains = new JSONArray());
+                            mains.put(new JSONObject().put("name", mainName(u)).put("url", u)
                                     .put("enabled", true).put("allow_no_hop", u.contains("xtls-rprx-vision")));
                             Ctl.patch("slots", slots);
-                        } catch (Exception ignored) { }
+                        } catch (Exception e) { failed(e); }
                     }); break;
                     case 4: confirm("Delete slot " + name + "?", () -> { slots.remove(si); Ctl.patch("slots", slots); }); break;
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception e) { failed(e); }
         });
     }
 
@@ -340,7 +344,7 @@ public class MainActivity extends Activity {
                     case 2: mains.remove(mi); break;
                 }
                 Ctl.patch("slots", slots);
-            } catch (Exception ignored) { }
+            } catch (Exception e) { failed(e); }
         });
     }
 
@@ -484,6 +488,11 @@ public class MainActivity extends Activity {
     private void fetching(String what) {
         Core.log("→ " + what + " … (result below when the fetch ends)");
         toast("fetching… result shows in the Log tab");
+    }
+
+    private void failed(Exception e) {
+        Core.log("edit failed: " + e);
+        toast("edit failed: " + e.getMessage());
     }
 
     private void toast(String s) {
