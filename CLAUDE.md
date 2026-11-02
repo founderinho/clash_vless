@@ -58,8 +58,9 @@ or a **system-wide TUN** — with automatic tiered failover.
   probes/live dials to one node share **one bounded** conn. Re-apply **both** after any re-vendor.
 - `android/` — **Android app** (minimal UX, core only). No Gradle: `android/build.sh` does
   go → javac → d8 → aapt2 → zipalign → apksigner into `dist/clashvless.apk`. **minSdk 24** (Android 7; API-26
-  calls are version-guarded), target 34. ABIs: **arm64** built `CGO_ENABLED=0` (no NDK needed) + **armeabi-v7a**
-  (android/arm needs cgo → built with the NDK's clang, skipped if no NDK under `$ANDROID_HOME/ndk`). The Go
+  calls are version-guarded), target 34. ABIs: **arm64** + **armeabi-v7a**, both built **with cgo** via the NDK's
+  clang (`$ANDROID_HOME/ndk`) so Go resolves through bionic `getaddrinfo` → netd = the **system resolver** (Private
+  DNS, per-network — the browser's path). Without an NDK only a cgo-less arm64 builds (Go's own DNS). The Go
   binary ships as `lib/<abi>/libclashvless.so` (`extractNativeLibs=true`) and is **exec'd as a child
   process** — the same CLI, `--config <filesDir>`. **CLI access**: the APK is `debuggable` and the app writes
   `files/cv` (a wrapper with the right `--config`/DNS env), so `adb shell run-as com.clashvless sh files/cv
@@ -71,10 +72,11 @@ or a **system-wide TUN** — with automatic tiered failover.
   replaces fwmark/bypass routes), spawns `run` with `CLASHVLESS_TUN_SOCK`, and hands it the fd over that unix
   socket (`SCM_RIGHTS`). Go side (`platform_android.go`, stub `platform_other.go`): receives the fd → sets
   `XRAY_TUN_FD` (xray's `proxy/tun/tun_android.go` reads it) → forces `TunEnabled` on; `internal/tun/tun_android.go`
-  makes the OS layer a no-op (`tun_linux.go` is now `linux && !android`). `platformInit` installs a Go
-  resolver from `CLASHVLESS_DNS` (the app passes the underlying network's resolvers — cgo-less Go on Android
-  has no `/etc/resolv.conf`; servers are **rotated per query**, IPv4 first — a UDP dial never fails, so a fixed
-  first server that's dead stalled every lookup) and defaults SOCKS to `127.0.0.1`. The app also sets
+  makes the OS layer a no-op (`tun_linux.go` is now `linux && !android`). `platformInit` (cgo-less builds only, `haveCgo`
+  in `cgo_android.go`/`nocgo_android.go`) installs a Go resolver from `CLASHVLESS_DNS` (the app passes the
+  underlying network's resolvers — cgo-less Go on Android has no `/etc/resolv.conf`; servers are **rotated per
+  query**, IPv4 first). Forcing that plain-UDP resolver on a modern phone made sub fetches hang (`context
+  deadline exceeded`) while the browser — on the system resolver — opened the same URL fine and defaults SOCKS to `127.0.0.1`. The app also sets
   `SSL_CERT_DIR` to the Android 14+ conscrypt APEX roots + `/system/etc/security/cacerts` (Go only knows the
   latter). Control-server messages (sub add/refetch results, auto-fetch) go through `Supervisor.Log`, so they
   reach `run`'s stdout = the app's Log tab, not only control clients. **Daemon lifecycle** (`Core`): the daemon

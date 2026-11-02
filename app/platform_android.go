@@ -16,11 +16,21 @@ import (
 	"clashvless/internal/store"
 )
 
-// platformInit: Android has no /etc/resolv.conf, so cgo-less Go would query
-// 127.0.0.1:53. Resolve via the servers the app passes in (its active network's).
+// platformInit: with cgo, Go already uses the system resolver. A cgo-less build
+// would query 127.0.0.1:53 (no /etc/resolv.conf), so resolve via the servers the
+// app passes in (its active network's) instead.
 func platformInit(st *store.State) {
+	if !haveCgo {
+		useResolvers(os.Getenv("CLASHVLESS_DNS"))
+	}
+	if st.ListenAddr == "" {
+		st.ListenAddr = "127.0.0.1" // a phone roams public Wi-Fi; don't expose the SOCKS ports
+	}
+}
+
+func useResolvers(list string) {
 	var servers []string
-	for _, s := range strings.Split(os.Getenv("CLASHVLESS_DNS"), ",") {
+	for _, s := range strings.Split(list, ",") {
 		if s = strings.TrimSpace(s); s != "" {
 			servers = append(servers, s)
 		}
@@ -34,9 +44,6 @@ func platformInit(st *store.State) {
 		var d net.Dialer
 		return d.DialContext(ctx, network, net.JoinHostPort(s, "53"))
 	}}
-	if st.ListenAddr == "" {
-		st.ListenAddr = "127.0.0.1" // a phone roams public Wi-Fi; don't expose the SOCKS ports
-	}
 }
 
 // platformTunFd receives the VpnService tun fd (SCM_RIGHTS over the unix socket

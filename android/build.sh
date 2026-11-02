@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds dist/clashvless.apk (arm64) without Gradle: go → javac → d8 → aapt2 → apksigner.
-# Needs: Go, a JDK, $ANDROID_HOME with platforms;android-34 + build-tools;34.0.0. arm64 links
-# without cgo; 32-bit armeabi-v7a needs cgo, so it's built only when an NDK is installed.
+# Builds dist/clashvless.apk without Gradle: go → javac → d8 → aapt2 → apksigner.
+# Needs: Go, a JDK, $ANDROID_HOME with platforms;android-34 + build-tools;34.0.0, and ideally an NDK
+# (cgo: system resolver + the 32-bit armeabi-v7a build).
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT=$(cd .. && pwd)
@@ -15,17 +15,21 @@ KS=${CLASHVLESS_KEYSTORE:-$HOME/.android/clashvless.keystore}
 VER=$(sed -n 's/^const Version = "\(.*\)"/\1/p' "$ROOT/app/internal/store/store.go")
 CODE=$(echo "$VER" | awk -F. '{print $1*10000 + $2*100 + $3}')
 
-rm -rf "$OUT" && mkdir -p "$OUT/classes" "$OUT/apk/lib/arm64-v8a" "$ROOT/dist"
+rm -rf "$OUT" && mkdir -p "$OUT/classes" "$ROOT/dist"
 
-GOOS=android GOARCH=arm64 CGO_ENABLED=0 go -C "$ROOT/app" build -trimpath -ldflags="-s -w" \
-  -o "$OUT/apk/lib/arm64-v8a/libclashvless.so" .
+# With the NDK both ABIs build with cgo, so Go resolves via bionic/netd (the system
+# resolver, Private DNS included). Without it only a cgo-less arm64 builds.
+gob() {
+  mkdir -p "$OUT/apk/lib/$1"
+  go -C "$ROOT/app" build -trimpath -ldflags="-s -w" -o "$OUT/apk/lib/$1/libclashvless.so" .
+}
 if [ -n "$NDK" ]; then
-  mkdir -p "$OUT/apk/lib/armeabi-v7a"
-  CC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi$MINSDK-clang" \
-    GOOS=android GOARCH=arm GOARM=7 CGO_ENABLED=1 go -C "$ROOT/app" build -trimpath -ldflags="-s -w" \
-    -o "$OUT/apk/lib/armeabi-v7a/libclashvless.so" .
+  TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+  CC="$TC/aarch64-linux-android$MINSDK-clang" GOOS=android GOARCH=arm64 CGO_ENABLED=1 gob arm64-v8a
+  CC="$TC/armv7a-linux-androideabi$MINSDK-clang" GOOS=android GOARCH=arm GOARM=7 CGO_ENABLED=1 gob armeabi-v7a
 else
-  echo "no NDK — skipping armeabi-v7a (32-bit) build"
+  echo "no NDK — cgo-less arm64 only (Go's own DNS, no armeabi-v7a)"
+  GOOS=android GOARCH=arm64 CGO_ENABLED=0 gob arm64-v8a
 fi
 
 javac -nowarn --release 17 -classpath "$JAR" -d "$OUT/classes" $(find src -name '*.java')
