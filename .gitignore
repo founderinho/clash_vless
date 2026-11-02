@@ -14,3 +14,4 @@ events.log
 *.swp
 .DS_Store
 tmp/
+context.md

@@ -56,6 +56,28 @@ or a **system-wide TUN** — with automatic tiered failover.
   the cache and stored a **new, never-closed `grpc.ClientConn`** (+ its goroutines) into an insert-only global
   map → ~2 GB/day leak with gRPC entry nodes. The patch hashes dest+transport+security+socket settings so all
   probes/live dials to one node share **one bounded** conn. Re-apply **both** after any re-vendor.
+- `android/` — **Android app** (minimal UX, core only). No Gradle: `android/build.sh` does
+  go → javac → d8 → aapt2 → zipalign → apksigner into `dist/clashvless.apk`. **minSdk 24** (Android 7; API-26
+  calls are version-guarded), target 34. ABIs: **arm64** built `CGO_ENABLED=0` (no NDK needed) + **armeabi-v7a**
+  (android/arm needs cgo → built with the NDK's clang, skipped if no NDK under `$ANDROID_HOME/ndk`). The Go
+  binary ships as `lib/<abi>/libclashvless.so` (`extractNativeLibs=true`) and is **exec'd as a child
+  process** — the same CLI, `--config <filesDir>`. **CLI access**: the APK is `debuggable` and the app writes
+  `files/cv` (a wrapper with the right `--config`/DNS env), so `adb shell run-as com.clashvless sh files/cv
+  <cmd>` runs any command as the app's user against its real state — `status`/`tui` attach to the VPN's
+  daemon over `control.sock` (daemon = `VpnSvc`'s `run`; no embedded mode, the tun fd only comes from the
+  VpnService). Old bionic prints a harmless `unsupported flags DT_FLAGS_1` linker warning on each exec. `VpnSvc` (Java `VpnService`) establishes the tun
+  (`198.18.0.1/30`, `0/0`, DNS `8.8.8.8` via the tunnel, no v6 route → Android blocks v6 = no leak), excludes
+  **our own package** from the VPN (so every daemon socket — exits, probes, sub fetches — goes direct; this
+  replaces fwmark/bypass routes), spawns `run` with `CLASHVLESS_TUN_SOCK`, and hands it the fd over that unix
+  socket (`SCM_RIGHTS`). Go side (`platform_android.go`, stub `platform_other.go`): receives the fd → sets
+  `XRAY_TUN_FD` (xray's `proxy/tun/tun_android.go` reads it) → forces `TunEnabled` on; `internal/tun/tun_android.go`
+  makes the OS layer a no-op (`tun_linux.go` is now `linux && !android`). `platformInit` installs a Go
+  resolver from `CLASHVLESS_DNS` (the app passes the underlying network's resolvers — cgo-less Go on Android
+  has no `/etc/resolv.conf`) and defaults SOCKS to `127.0.0.1`. UI (`MainActivity`): input box + Add sub /
+  Add main / Fetch / Run (any CLI command) / Start / Stop / Info + the daemon's stdout as the log. The daemon
+  owns `state.json` while running, so a mutating command stops the VPN, runs, and restarts it.
+  Host-testable without a phone: build with a `go build -overlay` that swaps the `*_android.go` files in
+  under a `linux` tag, then hand it a tun fd from `unshare -Urn` (the netns stands in for the VPN).
 - `dist/` — prebuilt release binaries (**not committed**; build artifacts).
 
 ## Build & run
@@ -63,6 +85,7 @@ or a **system-wide TUN** — with automatic tiered failover.
 go -C app build -o ../dist/clashvless .     # build the single binary
 go -C app run . [command]                   # run from source
 go -C app build ./...                        # compile-check every package
+android/build.sh                             # → dist/clashvless.apk (needs $ANDROID_HOME: platforms;android-34 + build-tools;34.0.0)
 ```
 `run` starts the blocking daemon; `tui`/`status` attach to it as clients — but `tui` now **self-starts
 an in-process daemon** if none is running (stops when the TUI exits), so a fresh install needs no shell:

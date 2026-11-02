@@ -73,6 +73,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	platformInit(st)
 
 	cmd := "tui" // bare `clashvless` launches the dashboard
 	if len(args) > 0 {
@@ -237,6 +238,9 @@ func cmdUp(st *store.State, args []string) error {
 // cmdRun runs the failover supervisor: it keeps the single local port served by
 // the best available tier and re-evaluates continuously (failover + recovery).
 func cmdRun(st *store.State, debug bool) error {
+	if err := platformTunFd(st); err != nil {
+		return err
+	}
 	if !st.AnyUsableMain() {
 		fmt.Println("note: no main yet — the daemon will idle (DOWN). Open the TUI to run setup: clashvless tui")
 	}
