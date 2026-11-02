@@ -117,6 +117,9 @@ func run(args []string) error {
 		printDevice(st)
 		return nil
 
+	case "hwid":
+		return cmdHWID(st, args[1:])
+
 	case "fetch":
 		return cmdFetch(st)
 
@@ -183,9 +186,29 @@ func run(args []string) error {
 		fmt.Println("  run              run the failover engine headless (auto T1→T2→T3, keep-alive)")
 		fmt.Println("  tui              launch the live dashboard (default with no args)")
 		fmt.Println("  whoami           show this device's identity (what the panel sees)")
+		fmt.Println("  hwid [<id>|new]  set the device HWID (paste another device's to share its panel slot) or mint a new one")
 		fmt.Println("flags: --config <path> (alt state file/dir)   --cli (headless)   --debug (events.log)")
 		return nil
 	}
+}
+
+func cmdHWID(st *store.State, args []string) error {
+	if len(args) == 0 {
+		fmt.Println(st.Device.HWID)
+		return nil
+	}
+	h := strings.TrimSpace(args[0])
+	if h == "new" {
+		h = store.NewHWID()
+	} else if !store.ValidHWID(h) {
+		return errors.New("HWID must be 10–64 chars: a–z A–Z 0–9 = -")
+	}
+	st.Device.HWID = h
+	if err := st.Save(); err != nil {
+		return err
+	}
+	printDevice(st)
+	return nil
 }
 
 // cmdGen prints the xray config the engine would run for a tier: main alone

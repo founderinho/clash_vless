@@ -239,6 +239,10 @@ func (m *model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case inputEditStr:
 			if idx := m.cfgCursor - len(cfgFields); idx >= 0 && idx < len(cfgStrFields) {
 				val := strings.TrimSpace(raw)
+				if f := cfgStrFields[idx]; f.check != nil && !f.check(val) {
+					m.busy = f.bad
+					break
+				}
 				m.apply(func(st *store.State) { cfgStrFields[idx].set(st, val) })
 				m.busy = "saved ✓"
 			}
@@ -515,11 +519,15 @@ type strField struct {
 	empty string // shown when the value is unset
 	note  string
 	hint  string // status-line prompt while editing
+	check func(string) bool // optional validator; on failure the status line shows bad
+	bad   string
 }
 
 var cfgStrFields = []strField{
-	{"Fetch proxy", func(st *store.State) string { return st.FetchProxy }, func(st *store.State, v string) { st.FetchProxy = v }, "(unset)", "host:port (SOCKS5)", "type host:port, Enter to save"},
-	{"TUN static DNS", func(st *store.State) string { return st.TunStaticDNS }, func(st *store.State, v string) { st.TunStaticDNS = v }, "8.8.8.8 (default)", "resolver when TUN DNS = static routed", "type an IP, Enter to save"},
+	{"Fetch proxy", func(st *store.State) string { return st.FetchProxy }, func(st *store.State, v string) { st.FetchProxy = v }, "(unset)", "host:port (SOCKS5)", "type host:port, Enter to save", nil, ""},
+	{"TUN static DNS", func(st *store.State) string { return st.TunStaticDNS }, func(st *store.State, v string) { st.TunStaticDNS = v }, "8.8.8.8 (default)", "resolver when TUN DNS = static routed", "type an IP, Enter to save", nil, ""},
+	{"Device HWID", func(st *store.State) string { return st.Device.HWID }, func(st *store.State, v string) { st.Device.HWID = v }, "(unset)", "sent on fetch = one panel device slot; paste another device's to share its slot", "type/paste a HWID, Enter to save",
+		store.ValidHWID, "HWID must be 10–64 chars: a–z A–Z 0–9 = -"},
 }
 
 // --- styles ------------------------------------------------------------------

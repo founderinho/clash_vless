@@ -102,7 +102,7 @@ an in-process daemon** if none is running (stops when the TUI exits), so a fresh
 `clashvless tui` → the setup wizard opens on the empty config. `run` no longer requires a main (idles DOWN).
 Key commands: `add <url>`, `fetch`, `fetch-proxy [host:port|off]`, `loglevel [level]`, `main add <vless://> [slot]`,
 `slot [add|rm|port|tun|enable|disable …]`, `up [entry]`, `run`,
-`tun [on|off|status|dns <ip>|dns direct|dns tunnel|lan …|ipv6 …|icmp on|off]`, `whoami`. See the default-case
+`tun [on|off|status|dns <ip>|dns direct|dns tunnel|lan …|ipv6 …|icmp on|off]`, `whoami`, `hwid [<id>|new]`. See the default-case
 help block in `main.go`.
 For **TUN mode** the daemon must be elevated: `sudo clashvless run` (then attach the TUI as a client).
 Set `CLASHVLESS_PPROF=127.0.0.1:6060` to expose `net/http/pprof` on the daemon (localhost-only, opt-in)
@@ -326,6 +326,9 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
   of the reverted v0.8.x didn't change this — the blocker is Vision on the entry, not the mechanism.)
 - **Device identity** (`store.Device`): one stable HWID + Happ User-Agent is reused for
   every fetch so we occupy exactly one panel device slot. Never mint a fresh HWID per fetch.
+  The HWID is user-settable everywhere — wizard, TUI **Config** tab (**Device HWID** row, validated by
+  `store.ValidHWID`), Android Config tab, and CLI `hwid [<id>|new]` — so pasting another device's HWID makes
+  both share one panel slot.
 - **Auto-fetch** (`store.AutoFetch()`/`AutoFetchInterval()`, `control.Server.autoFetchLoop`): the daemon
   periodically refetches every subscription so the node set never goes stale — a stale sub keeps probing
   now-dead servers and misses fresh ones (the "two boxes on one account show different providers / far
