@@ -5,6 +5,7 @@ import android.net.ConnectivityManager;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.os.Build;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -13,14 +14,23 @@ import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
-/** Runs the Go clashvless binary (shipped as lib/arm64-v8a/libclashvless.so) and holds the shared log. */
+/**
+ * Owns the Go daemon process (lib/<abi>/libclashvless.so `run`) and the shared log.
+ * The daemon runs whenever the UI is visible (idle: proxy + probes) or the VPN is on
+ * (with the tun fd). It always owns state.json; the UI talks to it over control.sock.
+ */
 final class Core {
     interface Listener { void onLine(String line); }
 
     private static final int LOG_MAX = 64 * 1024;
     private static final StringBuilder log = new StringBuilder();
     private static Listener listener;
+
+    static volatile boolean uiVisible;
+    private static Process daemon;
+    private static boolean daemonVpn;
 
     static synchronized void log(String line) {
         log.append(line).append('\n');
@@ -33,12 +43,20 @@ final class Core {
         return log.toString();
     }
 
+    static synchronized void clearLog() {
+        log.setLength(0);
+    }
+
     static String bin(Context c) {
         return c.getApplicationInfo().nativeLibraryDir + "/libclashvless.so";
     }
 
     static String dir(Context c) {
         return c.getFilesDir().getAbsolutePath();
+    }
+
+    static String sock(Context c) {
+        return dir(c) + "/control.sock";
     }
 
     /** files/cv: CLI as the app's user — `adb shell run-as com.clashvless sh files/cv status`. */
@@ -53,32 +71,54 @@ final class Core {
         new File(dir(c), "cv").setExecutable(true);
     }
 
-    static ProcessBuilder builder(Context c, List<String> args) {
-        List<String> cmd = new ArrayList<>(Arrays.asList(bin(c), "--config", dir(c)));
-        cmd.addAll(args);
-        ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true).directory(new File(dir(c)));
+    static synchronized boolean daemonAlive() {
+        return daemon != null;
+    }
+
+    /** (Re)starts the daemon; tunSock != null = VPN mode (it waits for the fd there). */
+    static synchronized void startDaemon(Context c, String tunSock) throws java.io.IOException {
+        stopDaemon();
         String dns = dns(c);
         writeCli(c, dns);
+        List<String> cmd = new ArrayList<>(Arrays.asList(bin(c), "--config", dir(c), "run"));
+        ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true).directory(new File(dir(c)));
         pb.environment().put("CLASHVLESS_DNS", dns);
         pb.environment().put("HOME", dir(c));
-        return pb;
+        if (tunSock != null) pb.environment().put("CLASHVLESS_TUN_SOCK", tunSock);
+        final Process p = pb.start();
+        p.getOutputStream().close();
+        daemon = p;
+        daemonVpn = tunSock != null;
+        log(daemonVpn ? "▶ daemon (VPN)" : "▶ daemon (idle — VPN off)");
+        new Thread(() -> {
+            int code = -1;
+            try {
+                pump(p);
+                code = p.waitFor();
+            } catch (Exception ignored) { }
+            boolean wasVpn;
+            synchronized (Core.class) {
+                if (daemon != p) return; // stopped on purpose
+                daemon = null;
+                wasVpn = daemonVpn;
+            }
+            log("■ daemon exited (" + code + ")");
+            if (wasVpn && VpnSvc.instance != null) VpnSvc.instance.shutdown();
+        }).start();
     }
 
-    /** Runs a one-shot CLI command, streaming its output into the log. Blocking. */
-    static int exec(Context c, List<String> args) {
-        log("$ clashvless " + android.text.TextUtils.join(" ", args));
+    static synchronized void stopDaemon() {
+        Process p = daemon;
+        daemon = null;
+        if (p == null) return;
+        p.destroy(); // SIGTERM on API 26+ → clean teardown; older Androids SIGKILL
         try {
-            Process p = builder(c, args).start();
-            p.getOutputStream().close();
-            pump(p);
-            return p.waitFor();
-        } catch (Exception e) {
-            log("error: " + e);
-            return -1;
-        }
+            if (Build.VERSION.SDK_INT < 26) p.waitFor();
+            else if (!p.waitFor(5, TimeUnit.SECONDS)) p.destroyForcibly();
+        } catch (InterruptedException ignored) { }
     }
 
-    static void pump(Process p) throws java.io.IOException {
+    private static void pump(Process p) throws java.io.IOException {
         try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
             for (String l; (l = r.readLine()) != null; ) {
                 if (!l.startsWith("WARNING: linker:")) log(l); // old bionic nags about Go's DT_FLAGS_1
@@ -96,7 +136,7 @@ final class Core {
             if (lp == null || nc == null || nc.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
             for (InetAddress a : lp.getDnsServers()) {
                 String h = a.getHostAddress();
-                if (h == null || h.startsWith("198.18.")) continue;
+                if (h == null) continue;
                 int pct = h.indexOf('%');
                 if (pct >= 0) h = h.substring(0, pct);
                 if (sb.length() > 0) sb.append(',');

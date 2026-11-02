@@ -15,23 +15,22 @@ import android.os.ParcelFileDescriptor;
 import java.io.File;
 import java.io.FileDescriptor;
 import java.io.OutputStream;
-import java.util.Collections;
-import java.util.concurrent.TimeUnit;
 
 /**
- * Owns the VPN: establishes the tun, spawns the Go daemon (`run`), and passes it
+ * Owns the VPN: establishes the tun, restarts the daemon in VPN mode, and passes it
  * the tun fd over a unix socket. Our own UID is excluded from the VPN, so every
  * socket the daemon opens (exits, failover probes, sub fetches) goes direct.
  */
 public class VpnSvc extends VpnService {
     static final String ACTION_START = "start", ACTION_STOP = "stop";
     static volatile boolean running;
+    static volatile VpnSvc instance;
 
     private ParcelFileDescriptor tun;
-    private Process daemon;
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        instance = this;
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
             new Thread(this::shutdown).start();
             return START_NOT_STICKY;
@@ -68,18 +67,7 @@ public class VpnSvc extends VpnService {
     private synchronized void startup() {
         try {
             String sock = new File(getCacheDir(), "tun.sock").getAbsolutePath();
-            ProcessBuilder pb = Core.builder(this, Collections.singletonList("run"));
-            pb.environment().put("CLASHVLESS_TUN_SOCK", sock);
-            daemon = pb.start();
-            daemon.getOutputStream().close();
-            final Process p = daemon;
-            new Thread(() -> {
-                int code = -1;
-                try { Core.pump(p); code = p.waitFor(); } catch (Exception ignored) { }
-                Core.log("■ daemon exited (" + code + ")");
-                if (p == daemon) shutdown();
-            }).start();
-
+            Core.startDaemon(this, sock);
             tun = new Builder()
                     .setSession("clashvless")
                     .setMtu(1500)
@@ -116,22 +104,15 @@ public class VpnSvc extends VpnService {
         throw last;
     }
 
-    private synchronized void shutdown() {
-        Process p = daemon;
-        daemon = null;
-        if (p != null) {
-            p.destroy(); // SIGTERM on API 26+ → daemon tears down cleanly; older Androids SIGKILL
-            try {
-                if (Build.VERSION.SDK_INT < 26) p.waitFor();
-                else if (!p.waitFor(5, TimeUnit.SECONDS)) p.destroyForcibly();
-            } catch (InterruptedException ignored) { }
-        }
+    synchronized void shutdown() {
+        boolean was = running;
+        running = false;
+        if (was) Core.stopDaemon(); // the UI's connect loop brings an idle daemon back if visible
         if (tun != null) {
             try { tun.close(); } catch (Exception ignored) { }
             tun = null;
         }
-        if (running) Core.log("■ VPN off");
-        running = false;
+        if (was) Core.log("■ VPN off");
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }
@@ -144,6 +125,7 @@ public class VpnSvc extends VpnService {
     @Override
     public void onDestroy() {
         if (running) shutdown();
+        instance = null;
         super.onDestroy();
     }
 }

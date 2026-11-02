@@ -73,9 +73,19 @@ or a **system-wide TUN** — with automatic tiered failover.
   `XRAY_TUN_FD` (xray's `proxy/tun/tun_android.go` reads it) → forces `TunEnabled` on; `internal/tun/tun_android.go`
   makes the OS layer a no-op (`tun_linux.go` is now `linux && !android`). `platformInit` installs a Go
   resolver from `CLASHVLESS_DNS` (the app passes the underlying network's resolvers — cgo-less Go on Android
-  has no `/etc/resolv.conf`) and defaults SOCKS to `127.0.0.1`. UI (`MainActivity`): input box + Add sub /
-  Add main / Fetch / Run (any CLI command) / Start / Stop / Info + the daemon's stdout as the log. The daemon
-  owns `state.json` while running, so a mutating command stops the VPN, runs, and restarts it.
+  has no `/etc/resolv.conf`) and defaults SOCKS to `127.0.0.1`. **Daemon lifecycle** (`Core`): the daemon
+  runs whenever the UI is visible — **idle** (no tun fd → `TunEnabled` off; slots still serve SOCKS + probe, so
+  Status shows live tiers before connecting) — and is restarted in **VPN mode** by `VpnSvc` on Connect;
+  Disconnect kills it and `Ctl`'s loop brings an idle one back if the UI is visible; leaving the UI with the VPN
+  off stops it. **UI** (`MainActivity`, bare, programmatic views) is a **control client like the TUI** (`Ctl`:
+  `LocalSocket` → `control.sock`, JSON lines; `state`/`status` events in, `patch`/`addsub`/`rmsub`/`refetch`/`kick`
+  out), so every edit applies **live** to the running daemon, VPN up or not. Tabs mirror the TUI: **Status**
+  (per-slot tier, pool up-counts, pins, recheck) · **Subs** (add/refetch/remove, all-vs-one mode, entry nodes
+  with latency/Mbps/flake — tap to pin) · **Main** (slots + mains; tap for enable/TUN slot/port/add main/delete,
+  main enable/w-o-hop/delete) · **Log** (daemon stdout) · **Config** (tab 5: interval/timeout/thresholds/pin
+  tier/force-hop/auto-fetch/fetch proxy/log level/allow-LAN/ICMP/**HWID** — paste one to share a panel slot).
+  Slot/main edits are done Java-side on the state JSON and sent as a top-level `slots` patch (full objects —
+  the daemon's patch is a field replace).
   Host-testable without a phone: build with a `go build -overlay` that swaps the `*_android.go` files in
   under a `linux` tag, then hand it a tun fd from `unshare -Urn` (the netns stands in for the VPN).
 - `dist/` — prebuilt release binaries (**not committed**; build artifacts).
