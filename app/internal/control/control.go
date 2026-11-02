@@ -166,9 +166,9 @@ func (s *Server) addSub(url string) {
 		}
 	})
 	if err != nil {
-		s.hub.Broadcast(Event{Type: "log", Line: fmt.Sprintf("add %s: %v", url, err)})
+		s.sup.Log(fmt.Sprintf("add %s: %v", url, err))
 	} else {
-		s.hub.Broadcast(Event{Type: "log", Line: fmt.Sprintf("added %q — %d nodes", title, len(nodes))})
+		s.sup.Log(fmt.Sprintf("added %q — %d nodes", title, len(nodes)))
 	}
 }
 
@@ -204,7 +204,7 @@ func (s *Server) refetch() {
 		}
 	})
 	if len(ups) == 0 {
-		s.hub.Broadcast(Event{Type: "log", Line: "refetch: no subscriptions to fetch"})
+		s.sup.Log("refetch: no subscriptions to fetch")
 	}
 	for _, u := range ups {
 		if u.ok {
@@ -212,9 +212,9 @@ func (s *Server) refetch() {
 			if name == "" {
 				name = u.url
 			}
-			s.hub.Broadcast(Event{Type: "log", Line: fmt.Sprintf("refetched %q — %d nodes", name, len(u.nodes))})
+			s.sup.Log(fmt.Sprintf("refetched %q — %d nodes", name, len(u.nodes)))
 		} else {
-			s.hub.Broadcast(Event{Type: "log", Line: fmt.Sprintf("refetch %s: %v", u.url, u.err)})
+			s.sup.Log(fmt.Sprintf("refetch %s: %v", u.url, u.err))
 		}
 	}
 }
@@ -248,7 +248,7 @@ func (s *Server) maybeAutoFetch() {
 	if !subsStale(&st, time.Now()) {
 		return
 	}
-	s.hub.Broadcast(Event{Type: "log", Line: "auto-fetch: subscriptions stale, refreshing"})
+	s.sup.Log("auto-fetch: subscriptions stale, refreshing")
 	s.refetch()
 }
 

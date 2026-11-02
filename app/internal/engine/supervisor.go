@@ -162,6 +162,9 @@ func NewSupervisor(st *store.State, onChange func(Status), onLog func(string)) *
 	return s
 }
 
+// Log emits a line on the daemon's log (stdout under `run` + every control client).
+func (s *Supervisor) Log(line string) { s.logf("%s", line) }
+
 func (s *Supervisor) logf(format string, a ...any) {
 	if s.onLog != nil {
 		s.onLog(fmt.Sprintf(format, a...))

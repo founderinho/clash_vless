@@ -55,13 +55,16 @@ final class Core {
         return c.getFilesDir().getAbsolutePath();
     }
 
+    /** Android 14+ ships updatable roots in the conscrypt APEX; Go only knows the /system dir. */
+    static final String CERT_DIRS = "/apex/com.android.conscrypt/cacerts:/system/etc/security/cacerts";
+
     static String sock(Context c) {
         return dir(c) + "/control.sock";
     }
 
     /** files/cv: CLI as the app's user — `adb shell run-as com.clashvless sh files/cv status`. */
     static void writeCli(Context c, String dns) {
-        String sh = "#!/system/bin/sh\nexport HOME=" + dir(c) + " CLASHVLESS_DNS=" + dns
+        String sh = "#!/system/bin/sh\nexport HOME=" + dir(c) + " CLASHVLESS_DNS=" + dns + " SSL_CERT_DIR=" + CERT_DIRS
                 + "\nexec " + bin(c) + " --config " + dir(c) + " \"$@\"\n";
         try (java.io.FileWriter w = new java.io.FileWriter(new File(dir(c), "cv"))) {
             w.write(sh);
@@ -84,6 +87,7 @@ final class Core {
         ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true).directory(new File(dir(c)));
         pb.environment().put("CLASHVLESS_DNS", dns);
         pb.environment().put("HOME", dir(c));
+        pb.environment().put("SSL_CERT_DIR", CERT_DIRS);
         if (tunSock != null) pb.environment().put("CLASHVLESS_TUN_SOCK", tunSock);
         final Process p = pb.start();
         p.getOutputStream().close();
@@ -129,7 +133,7 @@ final class Core {
     /** The underlying network's resolvers (Go has no /etc/resolv.conf to read on Android). */
     static String dns(Context c) {
         ConnectivityManager cm = c.getSystemService(ConnectivityManager.class);
-        StringBuilder sb = new StringBuilder();
+        List<String> v4 = new ArrayList<>(), v6 = new ArrayList<>();
         for (Network n : cm.getAllNetworks()) {
             NetworkCapabilities nc = cm.getNetworkCapabilities(n);
             LinkProperties lp = cm.getLinkProperties(n);
@@ -139,10 +143,11 @@ final class Core {
                 if (h == null) continue;
                 int pct = h.indexOf('%');
                 if (pct >= 0) h = h.substring(0, pct);
-                if (sb.length() > 0) sb.append(',');
-                sb.append(h);
+                List<String> l = h.contains(":") ? v6 : v4;
+                if (!l.contains(h)) l.add(h);
             }
         }
-        return sb.toString();
+        v4.addAll(v6);
+        return android.text.TextUtils.join(",", v4);
     }
 }

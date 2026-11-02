@@ -159,8 +159,10 @@ public class MainActivity extends Activity {
         boolean auto = st.optBoolean("auto_select");
         int active = st.optInt("active_sub");
         body.addView(row(
-                btn("+ Sub", () -> ask("Subscription URL", "", InputType.TYPE_TEXT_VARIATION_URI, u -> Ctl.cmd("addsub", "url", u))),
-                btn("Fetch all", () -> { Ctl.cmd("refetch"); toast("refetching…"); }),
+                btn("+ Sub", () -> ask("Subscription URL", "", InputType.TYPE_TEXT_VARIATION_URI, u -> {
+                    if (Ctl.cmd("addsub", "url", u)) fetching("adding " + u);
+                })),
+                btn("Fetch all", () -> { if (Ctl.cmd("refetch")) fetching("refetching all subs"); }),
                 btn(auto ? "Mode: all" : "Mode: one", () -> Ctl.patch("auto_select", !auto))));
         JSONArray subs = st.optJSONArray("subs");
         for (int i = 0; subs != null && i < subs.length(); i++) {
@@ -476,6 +478,12 @@ public class MainActivity extends Activity {
 
     private void confirm(String q, Runnable yes) {
         new AlertDialog.Builder(this).setMessage(q).setPositiveButton("Yes", (d, w) -> yes.run()).setNegativeButton("No", null).show();
+    }
+
+    /** The sub only appears once its fetch ends (up to ~30s); say so, and where the result lands. */
+    private void fetching(String what) {
+        Core.log("→ " + what + " … (result below when the fetch ends)");
+        toast("fetching… result shows in the Log tab");
     }
 
     private void toast(String s) {

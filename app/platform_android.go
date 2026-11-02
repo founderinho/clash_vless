@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -25,16 +26,13 @@ func platformInit(st *store.State) {
 		}
 	}
 	servers = append(servers, "8.8.8.8", "1.1.1.1")
+	// A UDP dial never fails, so rotate per query: the resolver's retries then walk
+	// every server instead of hammering a dead first one.
+	var next atomic.Uint32
 	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		s := servers[int(next.Add(1)-1)%len(servers)]
 		var d net.Dialer
-		var err error
-		for _, s := range servers {
-			var c net.Conn
-			if c, err = d.DialContext(ctx, network, net.JoinHostPort(s, "53")); err == nil {
-				return c, nil
-			}
-		}
-		return nil, err
+		return d.DialContext(ctx, network, net.JoinHostPort(s, "53"))
 	}}
 	if st.ListenAddr == "" {
 		st.ListenAddr = "127.0.0.1" // a phone roams public Wi-Fi; don't expose the SOCKS ports

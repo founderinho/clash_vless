@@ -73,7 +73,11 @@ or a **system-wide TUN** — with automatic tiered failover.
   `XRAY_TUN_FD` (xray's `proxy/tun/tun_android.go` reads it) → forces `TunEnabled` on; `internal/tun/tun_android.go`
   makes the OS layer a no-op (`tun_linux.go` is now `linux && !android`). `platformInit` installs a Go
   resolver from `CLASHVLESS_DNS` (the app passes the underlying network's resolvers — cgo-less Go on Android
-  has no `/etc/resolv.conf`) and defaults SOCKS to `127.0.0.1`. **Daemon lifecycle** (`Core`): the daemon
+  has no `/etc/resolv.conf`; servers are **rotated per query**, IPv4 first — a UDP dial never fails, so a fixed
+  first server that's dead stalled every lookup) and defaults SOCKS to `127.0.0.1`. The app also sets
+  `SSL_CERT_DIR` to the Android 14+ conscrypt APEX roots + `/system/etc/security/cacerts` (Go only knows the
+  latter). Control-server messages (sub add/refetch results, auto-fetch) go through `Supervisor.Log`, so they
+  reach `run`'s stdout = the app's Log tab, not only control clients. **Daemon lifecycle** (`Core`): the daemon
   runs whenever the UI is visible — **idle** (no tun fd → `TunEnabled` off; slots still serve SOCKS + probe, so
   Status shows live tiers before connecting) — and is restarted in **VPN mode** by `VpnSvc` on Connect;
   Disconnect kills it and `Ctl`'s loop brings an idle one back if the UI is visible; leaving the UI with the VPN

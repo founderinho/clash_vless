@@ -72,12 +72,13 @@ final class Ctl {
     }
 
     static synchronized boolean send(JSONObject cmd) {
-        if (out == null) return false;
         try {
+            if (out == null) throw new java.io.IOException("not connected");
             out.write((cmd.toString() + "\n").getBytes(StandardCharsets.UTF_8));
             out.flush();
             return true;
         } catch (Exception e) {
+            Core.log("control: " + cmd.optString("cmd") + " dropped — " + e.getMessage());
             return false;
         }
     }
