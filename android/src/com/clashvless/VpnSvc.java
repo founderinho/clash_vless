@@ -68,12 +68,20 @@ public class VpnSvc extends VpnService {
         try {
             String sock = new File(getCacheDir(), "tun.sock").getAbsolutePath();
             Core.startDaemon(this, sock);
+            org.json.JSONObject st = Ctl.state;
+            int mtu = st == null ? 0 : st.optInt("tun_mtu");
+            if (mtu <= 0) mtu = 1500;
+            String address = st == null ? "" : st.optString("tun_addr", "198.18.0.1/30");
+            if (address.isEmpty()) address = "198.18.0.1/30";
+            String[] cidr = address.split("/");
+            String dns = st == null ? "" : st.optString("tun_static_dns", "8.8.8.8");
+            if (dns.isEmpty()) dns = "8.8.8.8";
             tun = new Builder()
                     .setSession("clashvless")
-                    .setMtu(1500)
-                    .addAddress("198.18.0.1", 30)
+                    .setMtu(mtu)
+                    .addAddress(java.net.InetAddress.getByName(cidr[0]), cidr.length == 2 ? Integer.parseInt(cidr[1]) : 30)
                     .addRoute("0.0.0.0", 0)
-                    .addDnsServer("8.8.8.8")
+                    .addDnsServer(dns)
                     .addDisallowedApplication(getPackageName())
                     .establish();
             if (tun == null) throw new IllegalStateException("VPN permission not granted");

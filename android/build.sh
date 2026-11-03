@@ -5,11 +5,26 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 ROOT=$(cd .. && pwd)
+if [ -z "${JAVA_HOME:-}" ]; then
+  for JDK in "$HOME/.jdks"/jdk-17*; do
+    if [ -f "$JDK/bin/javac.exe" ] || [ -x "$JDK/bin/javac" ]; then
+      JAVA_HOME=$JDK
+      break
+    fi
+  done
+fi
+if [ -n "${JAVA_HOME:-}" ]; then
+  export JAVA_HOME
+  export PATH="$JAVA_HOME/bin:$PATH"
+fi
 SDK=${ANDROID_HOME:-$HOME/Android/Sdk}
 BT=$SDK/build-tools/34.0.0
 JAR=$SDK/platforms/android-34/android.jar
 OUT=$ROOT/tmp/android-build
-NDK=${ANDROID_NDK_HOME:-$(ls -d "$SDK"/ndk/* 2>/dev/null | sort -V | tail -1)}
+NDK=${ANDROID_NDK_HOME:-}
+if [ -z "$NDK" ] && [ -d "$SDK/ndk" ]; then
+  NDK=$(ls -d "$SDK"/ndk/* | sort -V | tail -1)
+fi
 MINSDK=24
 KS=${CLASHVLESS_KEYSTORE:-$HOME/.android/clashvless.keystore}
 VER=$(sed -n 's/^const Version = "\(.*\)"/\1/p' "$ROOT/app/internal/store/store.go")
@@ -32,13 +47,20 @@ else
   GOOS=android GOARCH=arm64 CGO_ENABLED=0 gob arm64-v8a
 fi
 
-javac -nowarn --release 17 -classpath "$JAR" -d "$OUT/classes" $(find src -name '*.java')
-"$BT/d8" --release --min-api $MINSDK --lib "$JAR" --output "$OUT/apk" $(find "$OUT/classes" -name '*.class')
+mapfile -t SOURCES < <(find src -name '*.java')
+javac -nowarn --release 17 -classpath "$JAR" -d "$OUT/classes" "${SOURCES[@]}"
+mapfile -t CLASSES < <(find "$OUT/classes" -name '*.class')
+java -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --release --min-api $MINSDK --lib "$JAR" --output "$OUT/apk" "${CLASSES[@]}"
 
+mkdir -p "$OUT/res/drawable-nodpi" "$OUT/apk/assets/branding/png"
+cp "$ROOT/app/branding/png/logo.png" "$OUT/res/drawable-nodpi/clashvless_logo.png"
+cp "$ROOT/app/branding/tokens.json" "$OUT/apk/assets/branding/tokens.json"
+cp "$ROOT/app/branding/png/"*.png "$OUT/apk/assets/branding/png/"
+"$BT/aapt2" compile --dir "$OUT/res" -o "$OUT/res.zip"
 "$BT/aapt2" link -I "$JAR" --manifest AndroidManifest.xml \
   --min-sdk-version $MINSDK --target-sdk-version 34 --version-name "$VER" --version-code "$CODE" \
-  -o "$OUT/base.apk"
-(cd "$OUT/apk" && zip -qr "$OUT/base.apk" classes.dex lib)
+  -o "$OUT/base.apk" "$OUT/res.zip"
+(cd "$OUT/apk" && zip -qr "$OUT/base.apk" classes.dex lib assets)
 "$BT/zipalign" -f -p 4 "$OUT/base.apk" "$OUT/aligned.apk"
 
 if [ ! -f "$KS" ]; then
@@ -46,5 +68,6 @@ if [ ! -f "$KS" ]; then
   keytool -genkeypair -keystore "$KS" -storepass android -keypass android -alias clashvless \
     -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=clashvless" >/dev/null
 fi
-"$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --out "$ROOT/dist/clashvless.apk" "$OUT/aligned.apk"
+java -cp "$BT/lib/apksigner.jar" com.android.apksigner.ApkSignerTool sign \
+  --ks "$KS" --ks-pass pass:android --out "$ROOT/dist/clashvless.apk" "$OUT/aligned.apk"
 echo "built $ROOT/dist/clashvless.apk ($VER)"

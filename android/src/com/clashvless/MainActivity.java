@@ -2,17 +2,30 @@ package com.clashvless;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -24,13 +37,17 @@ import java.util.List;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 
-/** Bare dashboard mirroring the TUI tabs: Status / Subs / Main / Log / Config. All edits go to the daemon live. */
+/** Native Android dashboard over the same daemon protocol as desktop. */
 public class MainActivity extends Activity {
-    private static final String[] TABS = {"Status", "Subs", "Main", "Log", "Config"};
+    private static final String[] TABS = {"Overview", "Subscriptions", "Routes", "Activity", "Settings"};
+    private static final String[] ICONS = {"overview", "subscriptions", "routes", "activity", "settings"};
     private static final int STATUS = 0, SUBS = 1, MAIN = 2, LOG = 3, CONFIG = 4;
+    private static int BG = Color.rgb(15, 19, 25), CARD = Color.rgb(24, 30, 38);
+    private static int TEXT = Color.rgb(230, 235, 241), MUTED = Color.rgb(145, 157, 171);
+    private static int ACCENT = Color.rgb(104, 213, 189), DANGER = Color.rgb(244, 126, 139);
 
-    private int tab;
-    private TextView head;
+    private int tab, configSection;
+    private TextView headline, statusLine;
     private Button vpnBtn;
     private final Button[] tabBtns = new Button[TABS.length];
     private LinearLayout body;
@@ -38,39 +55,59 @@ public class MainActivity extends Activity {
     private TextView logView;
 
     @Override
-    protected void onCreate(Bundle b) {
-        super.onCreate(b);
+    protected void onCreate(Bundle saved) {
+        super.onCreate(saved);
+        loadBranding();
         if (Build.VERSION.SDK_INT >= 33) requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 0);
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(16, 16, 16, 16);
+        root.setBackgroundColor(BG);
+        root.setPadding(dp(14), dp(10), dp(14), 0);
 
         LinearLayout top = new LinearLayout(this);
-        top.setBaselineAligned(false); // else the wrapped status line is clipped to the button's baseline
-        top.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        head = mono("");
-        head.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        top.addView(head, new LinearLayout.LayoutParams(0, -2, 1));
-        vpnBtn = btn("Connect", this::toggleVpn);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView logo = new ImageView(this);
+        logo.setImageBitmap(loadBitmap("logo"));
+        top.addView(logo, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        LinearLayout names = new LinearLayout(this);
+        names.setOrientation(LinearLayout.VERTICAL);
+        names.setPadding(dp(8), 0, dp(8), 0);
+        headline = text("clashvless", 20, TEXT, true);
+        statusLine = text("Starting local engine…", 11, MUTED, false);
+        statusLine.setMaxLines(2);
+        names.addView(headline);
+        names.addView(statusLine);
+        top.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
+        vpnBtn = btn("Connect", true, this::toggleVpn);
         top.addView(vpnBtn);
         root.addView(top);
 
+        HorizontalScrollView tabScroll = new HorizontalScrollView(this);
+        tabScroll.setHorizontalScrollBarEnabled(false);
         LinearLayout tabs = new LinearLayout(this);
+        tabs.setPadding(0, dp(10), 0, dp(8));
         for (int i = 0; i < TABS.length; i++) {
-            final int t = i;
-            tabBtns[i] = btn(TABS[i], () -> { tab = t; render(); });
-            tabs.addView(tabBtns[i], new LinearLayout.LayoutParams(0, -2, 1));
+            final int selected = i;
+            tabBtns[i] = btn(TABS[i], false, () -> { tab = selected; render(); });
+            setButtonIcon(tabBtns[i], ICONS[i], MUTED);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(36));
+            params.setMargins(0, 0, dp(5), 0);
+            tabs.addView(tabBtns[i], params);
         }
-        root.addView(tabs);
+        tabScroll.addView(tabs);
+        root.addView(tabScroll);
 
         scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(body);
+        body.setPadding(0, 0, 0, dp(30));
+        scroll.addView(body, new ScrollView.LayoutParams(-1, -2));
         root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
-
         Ctl.start(this);
     }
 
@@ -94,16 +131,14 @@ public class MainActivity extends Activity {
         super.onStop();
     }
 
-    // --- rendering ---------------------------------------------------------------
-
     private void render() {
         renderHead();
-        for (int i = 0; i < TABS.length; i++) tabBtns[i].setText(i == tab ? "[" + TABS[i] + "]" : TABS[i]);
+        for (int i = 0; i < TABS.length; i++) styleTab(tabBtns[i], i == tab);
         body.removeAllViews();
         if (tab != LOG) Core.setListener(null);
         JSONObject st = Ctl.state;
         if (tab != LOG && (!Ctl.connected || st == null)) {
-            body.addView(mono("connecting to daemon…"));
+            body.addView(card("Connecting", "Starting the local engine and reading its state…"));
             return;
         }
         switch (tab) {
@@ -117,7 +152,7 @@ public class MainActivity extends Activity {
 
     private void renderHead() {
         JSONObject s = Ctl.status;
-        head.setText((VpnSvc.running ? "VPN on  " : "VPN off  ") + (s == null ? "" : line(s)));
+        statusLine.setText((VpnSvc.running ? "VPN on · " : "VPN off · ") + (s == null ? "starting" : line(s)));
         vpnBtn.setText(VpnSvc.running ? "Disconnect" : "Connect");
     }
 
@@ -126,85 +161,103 @@ public class MainActivity extends Activity {
         long ms = s.optLong("Egress") / 1_000_000;
         String main = s.optString("Main");
         if (main.isEmpty()) main = "main";
-        String note = s.optString("Note");
-        note = note.isEmpty() ? "" : "  " + note;
-        if (tier == 0) return "✖ DOWN " + s.optString("Err") + note;
-        if (tier == 1) return "● T1 direct → " + main + "  " + ms + "ms" + note;
-        return "● T" + tier + " " + s.optString("Entry") + " → " + main + "  " + ms + "ms" + note;
+        if (tier == 0) return s.optString("Err", "Waiting for a route");
+        if (tier == 1) return "T1 direct → " + main + " · " + ms + " ms";
+        return "T" + tier + " " + s.optString("Entry") + " → " + main + " · " + ms + " ms";
     }
 
     private void renderStatus(JSONObject st) {
         JSONObject s = Ctl.status;
-        String tunSlot = tunSlot(st);
-        body.addView(mono(VpnSvc.running ? "VPN on — all traffic via slot \"" + tunSlot + "\""
-                : "VPN off — slots still serve SOCKS on " + listenHost(st)));
-        if (s == null) return;
-        if (!s.optString("TunErr").isEmpty()) body.addView(mono(s.optString("TunErr")));
-        body.addView(section("Slots"));
-        JSONArray slots = s.optJSONArray("Slots");
+        boolean online = s != null && s.optInt("Tier") > 0;
+        LinearLayout hero = card(online ? "Connected" : "Not connected",
+                online ? "Your private route is ready" : "Waiting for a working exit");
+        hero.addView(text(s == null ? "" : line(s), 14, online ? ACCENT : MUTED, false));
+        hero.addView(spacer(10));
+        LinearLayout metrics = new LinearLayout(this);
+        addMetric(metrics, "Latency", online ? s.optLong("Egress") / 1_000_000 + " ms" : "—");
+        addMetric(metrics, "Healthy nodes", okCount(s == null ? null : s.optJSONArray("Country")) + " / " + okCount(s == null ? null : s.optJSONArray("Bypass")));
+        addMetric(metrics, "Active tier", online ? "T" + s.optInt("Tier") : "—");
+        hero.addView(metrics);
+        body.addView(hero);
+        if (s != null && !s.optString("TunErr").isEmpty()) body.addView(card("VPN error", s.optString("TunErr")));
+
+        LinearLayout endpoints = card("Local endpoints", VpnSvc.running ? "System-wide VPN is on" : "Native SOCKS5 listeners");
+        JSONArray slots = st.optJSONArray("slots");
         for (int i = 0; slots != null && i < slots.length(); i++) {
             JSONObject sl = slots.optJSONObject(i);
-            body.addView(mono((sl.optBoolean("IsTun") ? "◉ " : "○ ") + sl.optString("Name") + " :" + sl.optInt("Port") + "\n   " + line(sl)));
+            if (!sl.optBoolean("enabled")) continue;
+            String address = "socks5://" + listenHost(st) + ":" + sl.optInt("port");
+            LinearLayout row = row(text(sl.optString("name") + "\n" + address, 13, TEXT, false),
+                    btn("Copy", false, () -> copy(address)));
+            endpoints.addView(row);
         }
-        body.addView(section("Entry pools"));
-        body.addView(mono("Country (T2): " + okCount(s.optJSONArray("Country")) + "\nBypass  (T3): " + okCount(s.optJSONArray("Bypass"))));
-        String pin = st.optString("pin_entry");
-        int pinTier = st.optInt("pin_tier");
-        body.addView(mono("pin: tier " + (pinTier == 0 ? "auto" : "T" + pinTier) + " · entry " + (pin.isEmpty() ? "auto" : pin)
-                + (st.optBoolean("force_hop") ? " · force-hop" : "")));
-        body.addView(btn("Recheck now", () -> Ctl.cmd("kick")));
+        body.addView(endpoints);
+        if (s != null) {
+            LinearLayout pools = card("Entry pools", "Live health and tier selection");
+            pools.addView(text("Country · T2     " + okCount(s.optJSONArray("Country")) + " online", 14, TEXT, false));
+            pools.addView(text("Bypass · T3       " + okCount(s.optJSONArray("Bypass")) + " online", 14, TEXT, false));
+            if (!s.optString("Note").isEmpty()) pools.addView(text(s.optString("Note"), 12, MUTED, false));
+            body.addView(pools);
+        }
+        if (!anyMain(st)) {
+            LinearLayout setup = card("Finish your setup", "Subscriptions provide hops. Add a final VLESS exit to carry your traffic.");
+            setup.addView(btn("Add final exit", true, () -> askMain(st, 0)));
+            body.addView(setup);
+        }
+        body.addView(btn("Recheck every route", false, () -> Ctl.cmd("kick")));
     }
 
     private void renderSubs(JSONObject st) {
-        boolean auto = st.optBoolean("auto_select");
-        int active = st.optInt("active_sub");
-        body.addView(row(
-                btn("+ Sub", () -> ask("Subscription URL", "", InputType.TYPE_TEXT_VARIATION_URI, u -> {
-                    if (Ctl.cmd("addsub", "url", u)) fetching("adding " + u);
-                })),
-                btn("Fetch all", () -> { if (Ctl.cmd("refetch")) fetching("refetching all subs"); }),
-                btn(auto ? "Mode: all" : "Mode: one", () -> Ctl.patch("auto_select", !auto))));
+        LinearLayout controls = card("Providers", "Fetch entry nodes and choose how subscriptions are combined");
+        controls.addView(row(btn("Add subscription", true, this::addSub), btn("Refresh all", false, () -> {
+            if (Ctl.cmd("refetch")) fetching("refetching all subscriptions");
+        })));
+        controls.addView(toggle("Aggregate all subscriptions", st.optBoolean("auto_select"), on -> Ctl.patch("auto_select", on)));
+        body.addView(controls);
         JSONArray subs = st.optJSONArray("subs");
+        if (subs == null || subs.length() == 0) body.addView(card("No subscriptions yet", "Add your Remnawave subscription URL to fetch entry nodes."));
         for (int i = 0; subs != null && i < subs.length(); i++) {
             final int idx = i;
             JSONObject sb = subs.optJSONObject(i);
             JSONArray nodes = sb.optJSONArray("nodes");
             String fetched = sb.optString("last_fetch");
             if (fetched.length() > 16) fetched = fetched.substring(0, 16).replace('T', ' ');
-            String mark = auto || idx == active ? "► " : "  ";
-            body.addView(tap(mono(mark + "[" + i + "] " + sb.optString("name") + " — " + (nodes == null ? 0 : nodes.length())
-                    + " nodes · " + fetched), () -> choose(sb.optString("name"), new String[]{"Use only this sub", "Remove"}, w -> {
-                if (w == 0) {
-                    Ctl.patch("active_sub", idx);
-                    Ctl.patch("auto_select", false);
-                } else {
-                    confirm("Remove " + sb.optString("name") + "?", () -> Ctl.cmd("rmsub", "index", idx));
-                }
-            })));
+            boolean active = st.optBoolean("auto_select") || st.optInt("active_sub") == idx;
+            LinearLayout item = card(sb.optString("name"), (nodes == null ? 0 : nodes.length()) + " nodes · " + fetched + (active ? " · Active" : ""));
+            item.addView(row(btn("Use only this", false, () -> {
+                Ctl.patch("active_sub", idx);
+                Ctl.patch("auto_select", false);
+            }), btn("Remove", false, () -> confirm("Remove " + sb.optString("name") + "?", () -> Ctl.cmd("rmsub", "index", idx)))));
+            body.addView(item);
         }
         JSONObject s = Ctl.status;
         String pin = st.optString("pin_entry");
-        body.addView(section("Entry nodes — tap to pin/unpin" + (pin.isEmpty() ? "" : " (★ " + pin + ")")));
-        if (s == null) return;
-        pool("Country (T2)", s.optJSONArray("Country"), pin);
-        pool("Bypass (T3)", s.optJSONArray("Bypass"), pin);
+        LinearLayout nodes = card("Entry nodes", pin.isEmpty() ? "Automatic selection · tap Pin to force an entry" : "Pinned: " + pin);
+        if (!pin.isEmpty()) nodes.addView(btn("Restore automatic selection", false, () -> Ctl.patch("pin_entry", "")));
+        if (s != null) {
+            pool(nodes, "Country · T2", s.optJSONArray("Country"), pin);
+            pool(nodes, "Bypass · T3", s.optJSONArray("Bypass"), pin);
+        }
+        body.addView(nodes);
     }
 
-    private void pool(String title, JSONArray probes, String pin) {
-        body.addView(mono(title));
+    private void pool(LinearLayout parent, String title, JSONArray probes, String pin) {
+        parent.addView(text(title, 16, ACCENT, true));
         for (int i = 0; probes != null && i < probes.length(); i++) {
             JSONObject p = probes.optJSONObject(i);
             String name = p.optString("Name");
-            StringBuilder t = new StringBuilder(name.equals(pin) ? "★ " : p.optBoolean("OK") ? "● " : "✖ ").append(name);
-            if (p.optBoolean("OK")) t.append("  ").append(p.optLong("Latency") / 1_000_000).append("ms");
-            if (p.optDouble("Speed") > 0) t.append("  ").append(Math.round(p.optDouble("Speed"))).append("Mbps");
-            if (p.optInt("Samples") > 0) t.append("  flake ").append(Math.round(p.optDouble("Flakiness"))).append("%");
-            body.addView(tap(mono("  " + t), () -> Ctl.patch("pin_entry", name.equals(pin) ? "" : name)));
+            StringBuilder stats = new StringBuilder(p.optString("Server"));
+            if (p.optBoolean("OK")) stats.append(" · ").append(p.optLong("Latency") / 1_000_000).append(" ms");
+            else stats.append(" · Offline");
+            if (p.optDouble("Speed") > 0) stats.append(" · ").append(Math.round(p.optDouble("Speed"))).append(" Mbps");
+            if (p.optInt("Samples") > 0) stats.append(" · ").append(Math.round(p.optDouble("Flakiness"))).append("% flakiness");
+            parent.addView(row(text(name + "\n" + stats, 12, TEXT, false),
+                    btn(name.equals(pin) ? "Unpin" : "Pin", false, () -> Ctl.patch("pin_entry", name.equals(pin) ? "" : name))));
         }
     }
 
     private void renderMain(JSONObject st) {
-        body.addView(row(btn("+ Slot", () -> addSlot(st))));
+        body.addView(btn("Add failover slot", true, () -> addSlot(st)));
         JSONArray slots = st.optJSONArray("slots");
         String tunSlot = tunSlot(st);
         JSONObject s = Ctl.status;
@@ -213,67 +266,107 @@ public class MainActivity extends Activity {
             JSONObject sl = slots.optJSONObject(i);
             String name = sl.optString("name");
             String live = "";
-            JSONArray ss = s == null ? null : s.optJSONArray("Slots");
-            for (int k = 0; ss != null && k < ss.length(); k++)
-                if (name.equals(ss.optJSONObject(k).optString("Name"))) live = "\n   " + line(ss.optJSONObject(k));
-            body.addView(tap(mono((name.equals(tunSlot) ? "◉ " : "○ ") + "slot \"" + name + "\" :" + sl.optInt("port")
-                    + (sl.optBoolean("enabled") ? " [on]" : " [off]") + live), () -> slotActions(st, si)));
+            JSONArray liveSlots = s == null ? null : s.optJSONArray("Slots");
+            for (int k = 0; liveSlots != null && k < liveSlots.length(); k++) {
+                JSONObject current = liveSlots.optJSONObject(k);
+                if (name.equals(current.optString("Name"))) live = " · " + line(current);
+            }
+            LinearLayout slot = card(name, "socks5://" + listenHost(st) + ":" + sl.optInt("port") + live + (name.equals(tunSlot) ? " · VPN slot" : ""));
+            slot.addView(toggle("Slot enabled", sl.optBoolean("enabled"), on -> editSlot(st, si, sl, "enabled", on)));
+            slot.addView(row(btn("Edit port", false, () -> editPort(st, si)),
+                    btn("Use for VPN", false, () -> Ctl.patch("tun_slot", name)),
+                    btn("Delete slot", false, () -> removeSlot(st, si))));
             JSONArray mains = sl.optJSONArray("mains");
-            if (mains == null || mains.length() == 0)
-                body.addView(tap(mono("    (no mains — tap to add your vless:// exit; the sub only supplies hops)"), () -> slotActions(st, si)));
             for (int m = 0; mains != null && m < mains.length(); m++) {
                 final int mi = m;
                 JSONObject mn = mains.optJSONObject(m);
-                String url = mn.optString("url");
-                body.addView(tap(mono("    [" + m + "] " + (mn.optBoolean("enabled") ? "✓ " : "✗ ") + mn.optString("name")
-                        + "  " + (mn.optBoolean("allow_no_hop") ? "direct-ok" : "hop-only") + "  " + proto(url)), () -> mainActions(st, si, mi)));
+                slot.addView(text(mn.optString("name") + "\n" + mainHost(mn.optString("url")) + " · " + proto(mn.optString("url")), 14, TEXT, true));
+                slot.addView(toggle("Exit enabled", mn.optBoolean("enabled"), on -> editMain(st, si, mi, "enabled", on)));
+                slot.addView(toggle("Allow direct · T1", mn.optBoolean("allow_no_hop"), on -> editMain(st, si, mi, "allow_no_hop", on)));
+                slot.addView(btn("Delete final exit", false, () -> confirm("Delete " + mn.optString("name") + "?", () -> editMain(st, si, mi, "delete", true))));
             }
+            slot.addView(btn("Add final exit", false, () -> askMain(st, si)));
+            body.addView(slot);
         }
-        body.addView(mono("\nVision mains are direct-only (T1). Plain mains hop through any entry; reality mains only through non-Vision entries."));
+        body.addView(card("Routing compatibility", "Vision exits are direct-only. Plain exits can use any hop; REALITY exits require a non-Vision hop."));
     }
 
     private void renderLog() {
-        body.addView(row(btn("Clear", () -> { Core.clearLog(); logView.setText(""); })));
-        logView = mono("");
-        logView.setTextSize(10);
+        LinearLayout logs = card("Daemon events", "Live engine activity · newest at the bottom");
+        logs.addView(btn("Clear view", false, () -> { Core.clearLog(); logView.setText(""); }));
+        logView = text("", 12, MUTED, false);
+        logView.setTypeface(Typeface.MONOSPACE);
         logView.setTextIsSelectable(true);
-        body.addView(logView);
-        logView.setText(Core.setListener(l -> runOnUiThread(() -> {
-            if (tab == LOG && logView != null) logView.append(l + "\n");
+        logs.addView(logView);
+        body.addView(logs);
+        logView.setText(Core.setListener(line -> runOnUiThread(() -> {
+            if (tab == LOG && logView != null) logView.append(line + "\n");
         })));
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
 
     private void renderConfig(JSONObject st) {
-        intRow(st, "Probe interval (s)", "interval_s", 12);
-        intRow(st, "Egress timeout (s)", "timeout_s", 6);
-        intRow(st, "Up threshold", "up_threshold", 3);
-        intRow(st, "Down threshold", "down_threshold", 2);
-        int pt = st.optInt("pin_tier");
-        cfg("Pin tier", pt == 0 ? "auto" : "T" + pt, () -> choose("Pin tier", new String[]{"auto", "T1", "T2", "T3"}, w -> Ctl.patch("pin_tier", w)));
-        boolRow(st, "Force hop (skip T1)", "force_hop", false);
-        boolRow(st, "Auto-fetch subs", "no_auto_fetch", true);
-        intRow(st, "Auto-fetch every (h)", "fetch_interval_h", 24);
-        boolRow(st, "Use fetch proxy", "use_fetch_proxy", false);
-        String fp = st.optString("fetch_proxy");
-        cfg("Fetch proxy", fp.isEmpty() ? "(unset)" : fp, () -> ask("Fetch proxy (socks5://h:p, http://h:p, h:p)", fp,
-                InputType.TYPE_TEXT_VARIATION_URI, v -> Ctl.patch("fetch_proxy", v)));
-        String lvl = st.optString("log_level").isEmpty() ? "warning" : st.optString("log_level");
-        String[] lvls = {"none", "error", "warning", "info", "debug"};
-        cfg("Log level *", lvl, () -> choose("xray log level", lvls, w -> Ctl.patch("log_level", lvls[w])));
-        boolean lan = "0.0.0.0".equals(st.optString("listen_addr"));
-        cfg("Allow LAN (0.0.0.0) *", lan ? "on" : "off", () -> Ctl.patch("listen_addr", lan ? "127.0.0.1" : "0.0.0.0"));
-        boolRow(st, "TUN ICMP ping *", "tun_no_icmp", true);
-        JSONObject dev = st.optJSONObject("device");
-        String hwid = dev == null ? "" : dev.optString("hwid");
-        cfg("Device HWID", hwid, () -> ask("HWID (paste one from another device to share its panel slot)", hwid, InputType.TYPE_CLASS_TEXT, v -> {
-            if (!v.matches("[a-zA-Z0-9=-]{10,64}")) { toast("HWID must be 10–64 chars: a-z A-Z 0-9 = -"); return; }
-            try { Ctl.patch("device", new JSONObject(dev.toString()).put("hwid", v)); } catch (Exception e) { failed(e); }
-        }));
-        body.addView(mono("\n* applies on next Connect/Disconnect (daemon restart).\nCLI: adb shell run-as com.clashvless sh files/cv <cmd>"));
-    }
+        String[] names = {"Network", "VPN", "Updates", "Device"};
+        LinearLayout sections = new LinearLayout(this);
+        for (int i = 0; i < names.length; i++) {
+            final int selected = i;
+            Button button = btn(names[i], configSection == i, () -> { configSection = selected; render(); });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(34), 1);
+            params.setMargins(dp(2), 0, dp(2), dp(8));
+            sections.addView(button, params);
+        }
+        body.addView(sections);
 
-    // --- actions -----------------------------------------------------------------
+        if (configSection == 0) {
+            LinearLayout failover = card("Automatic failover", "Route selection, health checks, and recovery");
+            intRow(failover, st, "Probe interval · seconds", "interval_s", 12, 2, 600);
+            intRow(failover, st, "Egress timeout · seconds", "timeout_s", 6, 1, 60);
+            intRow(failover, st, "Recovery threshold", "up_threshold", 3, 1, 10);
+            intRow(failover, st, "Failure threshold", "down_threshold", 2, 1, 10);
+            String[] tiers = {"Automatic", "T1 · Direct", "T2 · Country", "T3 · Bypass"};
+            chooseRow(failover, "Pin tier", tiers[st.optInt("pin_tier")], "Pin tier", tiers, which -> Ctl.patch("pin_tier", which));
+            boolRow(failover, st, "Force a hop · skip T1", "force_hop", false);
+            body.addView(failover);
+
+            LinearLayout network = card("Local listeners", "Restart the daemon to apply these changes");
+            intRow(network, st, "Listen port", "listen_port", 2084, 1024, 65535);
+            intRow(network, st, "First-hop port · 0 = auto", "entry_port", 0, 0, 65535);
+            boolean lan = !"127.0.0.1".equals(st.optString("listen_addr"));
+            actionRow(network, "Allow LAN connections", lan ? "0.0.0.0" : "127.0.0.1", () -> Ctl.patch("listen_addr", lan ? "127.0.0.1" : "0.0.0.0"));
+            String[] levels = {"none", "error", "warning", "info", "debug"};
+            String level = st.optString("log_level").isEmpty() ? "warning" : st.optString("log_level");
+            chooseRow(network, "Xray log level", level, "Xray log level", levels, which -> Ctl.patch("log_level", levels[which]));
+            body.addView(network);
+        } else if (configSection == 1) {
+            LinearLayout tun = card("System-wide VPN", "Static routed DNS · applied when the VPN reconnects");
+            textRow(tun, st, "Static DNS resolver", "tun_static_dns", "8.8.8.8");
+            boolRow(tun, st, "Answer ping locally", "tun_no_icmp", true);
+            textRow(tun, st, "TUN interface address", "tun_addr", "198.18.0.1/30");
+            intRow(tun, st, "TUN MTU · 0 = default", "tun_mtu", 0, 0, 9000);
+            body.addView(tun);
+        } else if (configSection == 2) {
+            LinearLayout updates = card("Subscription updates", "Background refresh and optional fetch proxy");
+            boolRow(updates, st, "Automatic refresh", "no_auto_fetch", true);
+            intRow(updates, st, "Refresh interval · hours", "fetch_interval_h", 24, 1, 168);
+            boolRow(updates, st, "Use fetch proxy", "use_fetch_proxy", false);
+            textRow(updates, st, "Fetch proxy", "fetch_proxy", "socks5://127.0.0.1:2084");
+            body.addView(updates);
+        } else {
+            LinearLayout identity = card("Device identity", "Stable Happ-compatible identity for every panel");
+            JSONObject device = st.optJSONObject("device");
+            String hwid = device == null ? "" : device.optString("hwid");
+            actionRow(identity, "Hardware ID", hwid, () -> ask("Hardware ID", hwid, InputType.TYPE_CLASS_TEXT, value -> {
+                if (!value.matches("[a-zA-Z0-9=-]{10,64}")) { toast("HWID must be 10–64 letters, digits, = or -"); return; }
+                try { Ctl.patch("device", new JSONObject(device.toString()).put("hwid", value)); } catch (Exception e) { failed(e); }
+            }));
+            if (device != null) {
+                identity.addView(text("Panel OS: " + device.optString("os") + " " + device.optString("os_ver")
+                        + "\nModel: " + device.optString("model") + "\nUser agent: " + device.optString("ua")
+                        + "\nLocale: " + device.optString("locale"), 11, MUTED, false));
+            }
+            body.addView(identity);
+        }
+    }
 
     private void toggleVpn() {
         if (VpnSvc.running) {
@@ -286,216 +379,371 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    protected void onActivityResult(int req, int res, Intent data) {
-        if (req != 1 || res != RESULT_OK) return;
-        Intent i = new Intent(this, VpnSvc.class).setAction(VpnSvc.ACTION_START);
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
-        else startService(i);
+    protected void onActivityResult(int request, int result, Intent data) {
+        if (request != 1 || result != RESULT_OK) return;
+        Intent intent = new Intent(this, VpnSvc.class).setAction(VpnSvc.ACTION_START);
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent);
+        else startService(intent);
+    }
+
+    private void addSub() {
+        ask("Subscription URL", "", InputType.TYPE_TEXT_VARIATION_URI, value -> {
+            if (!value.startsWith("http://") && !value.startsWith("https://")) { toast("Enter a valid http(s) URL"); return; }
+            if (Ctl.cmd("addsub", "url", value)) fetching("adding subscription");
+        });
     }
 
     private void addSlot(JSONObject st) {
-        JSONArray slots = copy(st.optJSONArray("slots"));
-        ask("New slot name", "slot" + (slots.length() + 1), InputType.TYPE_CLASS_TEXT, name -> {
+        ask("New slot name", "slot" + (st.optJSONArray("slots").length() + 1), InputType.TYPE_CLASS_TEXT, name -> {
             try {
+                JSONArray slots = copy(st.optJSONArray("slots"));
+                for (int i = 0; i < slots.length(); i++) if (name.equals(slots.optJSONObject(i).optString("name"))) { toast("Slot name already exists"); return; }
                 slots.put(new JSONObject().put("name", name).put("port", freePort(st)).put("enabled", true).put("mains", new JSONArray()));
                 Ctl.patch("slots", slots);
             } catch (Exception e) { failed(e); }
         });
     }
 
-    private void slotActions(JSONObject st, int si) {
-        JSONArray slots = copy(st.optJSONArray("slots"));
-        JSONObject sl = slots.optJSONObject(si);
-        String name = sl.optString("name");
-        choose("slot " + name, new String[]{sl.optBoolean("enabled") ? "Disable" : "Enable", "Use for VPN", "Port…", "Add main…", "Delete slot"}, w -> {
+    private void askMain(JSONObject st, int si) {
+        ask("Final VLESS exit", "", InputType.TYPE_TEXT_VARIATION_URI, value -> {
+            if (!value.startsWith("vless://")) { toast("Enter a valid vless:// URL"); return; }
             try {
-                switch (w) {
-                    case 0: sl.put("enabled", !sl.optBoolean("enabled")); Ctl.patch("slots", slots); break;
-                    case 1: Ctl.patch("tun_slot", name); break;
-                    case 2: ask("Port (slot uses port and port+1)", "" + sl.optInt("port"), InputType.TYPE_CLASS_NUMBER, v -> {
-                        try { sl.put("port", Integer.parseInt(v)); Ctl.patch("slots", slots); } catch (Exception e) { toast("bad port"); }
-                    }); break;
-                    case 3: ask("vless:// URL", "", InputType.TYPE_TEXT_VARIATION_URI, u -> {
-                        if (!u.startsWith("vless://")) { toast("need a vless:// URL"); return; }
-                        try {
-                            JSONArray mains = sl.optJSONArray("mains"); // a fresh slot's mains is JSON null (Go nil slice)
-                            if (mains == null) sl.put("mains", mains = new JSONArray());
-                            mains.put(new JSONObject().put("name", mainName(u)).put("url", u)
-                                    .put("enabled", true).put("allow_no_hop", u.contains("xtls-rprx-vision")));
-                            Ctl.patch("slots", slots);
-                        } catch (Exception e) { failed(e); }
-                    }); break;
-                    case 4: confirm("Delete slot " + name + "?", () -> { slots.remove(si); Ctl.patch("slots", slots); }); break;
-                }
-            } catch (Exception e) { failed(e); }
-        });
-    }
-
-    private void mainActions(JSONObject st, int si, int mi) {
-        JSONArray slots = copy(st.optJSONArray("slots"));
-        JSONArray mains = slots.optJSONObject(si).optJSONArray("mains");
-        JSONObject mn = mains.optJSONObject(mi);
-        choose(mn.optString("name"), new String[]{mn.optBoolean("enabled") ? "Disable" : "Enable",
-                mn.optBoolean("allow_no_hop") ? "Hop only (no T1)" : "Allow direct (T1)", "Delete"}, w -> {
-            try {
-                switch (w) {
-                    case 0: mn.put("enabled", !mn.optBoolean("enabled")); break;
-                    case 1: mn.put("allow_no_hop", !mn.optBoolean("allow_no_hop")); break;
-                    case 2: mains.remove(mi); break;
-                }
+                JSONArray slots = copy(st.optJSONArray("slots"));
+                JSONObject sl = slots.optJSONObject(si);
+                JSONArray mains = sl.optJSONArray("mains");
+                if (mains == null) sl.put("mains", mains = new JSONArray());
+                mains.put(new JSONObject().put("name", mainName(value)).put("url", value).put("enabled", true)
+                        .put("allow_no_hop", value.contains("xtls-rprx-vision") || value.contains("security=reality")));
                 Ctl.patch("slots", slots);
             } catch (Exception e) { failed(e); }
         });
     }
 
-    // --- helpers -----------------------------------------------------------------
-
-    private static String tunSlot(JSONObject st) {
-        JSONArray slots = st.optJSONArray("slots");
-        String want = st.optString("tun_slot"), first = "";
-        for (int i = 0; slots != null && i < slots.length(); i++) {
-            JSONObject sl = slots.optJSONObject(i);
-            if (!sl.optBoolean("enabled")) continue;
-            if (first.isEmpty()) first = sl.optString("name");
-            if (sl.optString("name").equals(want)) return want;
-        }
-        return first;
+    private void editPort(JSONObject st, int si) {
+        JSONArray slots = copy(st.optJSONArray("slots"));
+        JSONObject sl = slots.optJSONObject(si);
+        ask("Slot SOCKS5 port", "" + sl.optInt("port"), InputType.TYPE_CLASS_NUMBER, value -> {
+            try {
+                int port = Integer.parseInt(value);
+                if (port < 1024 || port > 65535) throw new NumberFormatException();
+                for (int i = 0; i < slots.length(); i++) {
+                    int other = slots.optJSONObject(i).optInt("port");
+                    if (i != si && (other == port || other == port + 1 || other + 1 == port)) { toast("Port is already used"); return; }
+                }
+                sl.put("port", port);
+                Ctl.patch("slots", slots);
+            } catch (NumberFormatException e) { toast("Port must be between 1024 and 65535"); }
+            catch (Exception e) { failed(e); }
+        });
     }
 
-    private static String listenHost(JSONObject st) {
-        String a = st.optString("listen_addr");
-        return a.isEmpty() ? "127.0.0.1" : a;
+    private void removeSlot(JSONObject st, int si) {
+        JSONArray slots = copy(st.optJSONArray("slots"));
+        if (slots.length() <= 1) { toast("The last slot cannot be removed"); return; }
+        confirm("Delete " + slots.optJSONObject(si).optString("name") + "?", () -> { slots.remove(si); Ctl.patch("slots", slots); });
     }
 
-    /** Lowest p with p and p+1 free (each slot also serves its first hop on Port+1), like store.freeSlotPort. */
-    private static int freePort(JSONObject st) {
-        int base = st.optInt("listen_port", 2084);
-        List<Integer> used = new ArrayList<>();
-        used.add(base);
-        used.add(base + 1);
-        JSONArray slots = st.optJSONArray("slots");
-        for (int i = 0; slots != null && i < slots.length(); i++) {
-            int p = slots.optJSONObject(i).optInt("port");
-            used.add(p);
-            used.add(p + 1);
-        }
-        for (int p = base + 2; p < 65535; p++) if (!used.contains(p) && !used.contains(p + 1)) return p;
-        return 0;
+    private void editSlot(JSONObject st, int si, JSONObject original, String key, Object value) {
+        try {
+            JSONArray slots = copy(st.optJSONArray("slots"));
+            slots.optJSONObject(si).put(key, value);
+            Ctl.patch("slots", slots);
+        } catch (Exception e) { failed(e); }
     }
 
-    private static String okCount(JSONArray probes) {
-        int ok = 0, n = probes == null ? 0 : probes.length();
-        for (int i = 0; i < n; i++) if (probes.optJSONObject(i).optBoolean("OK")) ok++;
-        return ok + "/" + n + " up";
+    private void editMain(JSONObject st, int si, int mi, String key, Object value) {
+        try {
+            JSONArray slots = copy(st.optJSONArray("slots"));
+            JSONArray mains = slots.optJSONObject(si).optJSONArray("mains");
+            if ("delete".equals(key)) mains.remove(mi);
+            else mains.optJSONObject(mi).put(key, value);
+            Ctl.patch("slots", slots);
+        } catch (Exception e) { failed(e); }
     }
 
-    private static String proto(String u) {
-        android.net.Uri p = android.net.Uri.parse(u);
-        String flow = p.getQueryParameter("flow"), sec = p.getQueryParameter("security"), net = p.getQueryParameter("type");
-        String tag = flow != null && flow.contains("xtls-rprx-vision") ? "vision" : sec == null || sec.isEmpty() || sec.equals("none") ? "plain" : sec;
-        return net == null || net.isEmpty() || net.equals("tcp") ? tag : tag + "·" + net;
-    }
-
-    private static String mainName(String u) {
-        android.net.Uri p = android.net.Uri.parse(u);
-        String f = p.getFragment();
-        return f != null && !f.trim().isEmpty() ? f.trim() : p.getHost();
-    }
-
-    private static JSONArray copy(JSONArray a) {
-        try { return new JSONArray(a == null ? "[]" : a.toString()); } catch (Exception e) { return new JSONArray(); }
-    }
-
-    private void intRow(JSONObject st, String label, String key, int def) {
-        int v = st.optInt(key);
-        if (v == 0) v = def;
-        final int cur = v;
-        cfg(label, "" + cur, () -> ask(label, "" + cur, InputType.TYPE_CLASS_NUMBER, s -> {
-            try { Ctl.patch(key, Integer.parseInt(s)); } catch (NumberFormatException e) { toast("not a number"); }
+    private void intRow(LinearLayout parent, JSONObject st, String label, String key, int fallback, int min, int max) {
+        int current = st.optInt(key);
+        if (current == 0 && fallback != 0) current = fallback;
+        final int shown = current;
+        actionRow(parent, label, "" + shown, () -> ask(label, "" + shown, InputType.TYPE_CLASS_NUMBER, value -> {
+            try {
+                int number = Integer.parseInt(value);
+                if (number < min || number > max) { toast("Value must be between " + min + " and " + max); return; }
+                Ctl.patch(key, number);
+            } catch (NumberFormatException e) { toast("Enter a valid number"); }
         }));
     }
 
-    /** inverted = the stored key is the negation of the shown setting (no_auto_fetch, tun_no_icmp). */
-    private void boolRow(JSONObject st, String label, String key, boolean inverted) {
+    private void textRow(LinearLayout parent, JSONObject st, String label, String key, String hint) {
+        String current = st.optString(key);
+        actionRow(parent, label, current.isEmpty() ? hint : current, () -> ask(label, current, InputType.TYPE_TEXT_VARIATION_URI, value -> Ctl.patch(key, value)));
+    }
+
+    private void boolRow(LinearLayout parent, JSONObject st, String label, String key, boolean inverted) {
         boolean on = st.optBoolean(key) != inverted;
-        cfg(label, on ? "on" : "off", () -> Ctl.patch(key, on == inverted));
+        parent.addView(toggle(label, on, value -> Ctl.patch(key, value == inverted)));
     }
 
-    private void cfg(String label, String value, Runnable onTap) {
-        body.addView(tap(mono(String.format("%-24s %s", label, value)), onTap));
+    private void chooseRow(LinearLayout parent, String label, String value, String title, String[] items, IntConsumer pick) {
+        actionRow(parent, label, value, () -> choose(title, items, pick));
     }
 
-    private TextView section(String s) {
-        TextView t = mono("\n" + s);
-        t.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        return t;
+    private void actionRow(LinearLayout parent, String label, String value, Runnable action) {
+        LinearLayout row = row(text(label + "\n" + value, 13, TEXT, false), btn("Edit", false, action));
+        parent.addView(row);
     }
 
-    private TextView mono(String s) {
-        TextView t = new TextView(this);
-        t.setTypeface(Typeface.MONOSPACE);
-        t.setTextSize(12);
-        t.setText(s);
-        t.setPadding(0, 6, 0, 6);
-        return t;
+    private Switch toggle(String label, boolean checked, Consumer<Boolean> changed) {
+        Switch sw = new Switch(this);
+        sw.setText(label);
+        sw.setTextColor(TEXT);
+        sw.setTextSize(13);
+        sw.setPadding(0, dp(4), 0, dp(4));
+        sw.setChecked(checked);
+        if (Build.VERSION.SDK_INT >= 21) {
+            sw.setThumbTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{ACCENT, MUTED}));
+            sw.setTrackTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{Color.rgb(36, 103, 89), Color.rgb(51, 66, 88)}));
+        }
+        sw.setOnCheckedChangeListener((view, on) -> changed.accept(on));
+        return sw;
     }
 
-    private View tap(View v, Runnable r) {
-        v.setOnClickListener(x -> r.run());
-        v.setBackgroundResource(android.R.drawable.list_selector_background);
-        return v;
+    private LinearLayout card(String title, String subtitle) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setBackground(round(CARD, 10));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.setMargins(0, 0, 0, dp(8));
+        card.setLayoutParams(params);
+        card.addView(text(title, 15, TEXT, true));
+        if (subtitle != null && !subtitle.isEmpty()) card.addView(text(subtitle, 11, MUTED, false));
+        return card;
     }
 
-    private Button btn(String label, Runnable r) {
-        Button b = new Button(this);
-        b.setText(label);
-        b.setAllCaps(false);
-        b.setTextSize(12);
-        b.setMinHeight(0);
-        b.setMinimumHeight(0);
-        b.setOnClickListener(v -> r.run());
-        return b;
+    private TextView text(String value, int size, int color, boolean bold) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        view.setLineSpacing(0, 1.05f);
+        view.setPadding(0, dp(2), 0, dp(2));
+        if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        return view;
     }
 
-    private LinearLayout row(View... vs) {
-        LinearLayout r = new LinearLayout(this);
-        for (View v : vs) r.addView(v, new LinearLayout.LayoutParams(0, -2, 1));
-        return r;
+    private Button btn(String label, boolean primary, Runnable action) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setAllCaps(false);
+        button.setTextSize(12);
+        button.setTextColor(primary ? BG : TEXT);
+        button.setMinHeight(dp(34));
+        button.setMinimumHeight(dp(34));
+        button.setPadding(dp(11), 0, dp(11), 0);
+        GradientDrawable content = round(primary ? ACCENT : Color.rgb(31, 39, 49), 8);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(primary ? 0x55ffffff : 0x3368d5bd), content, round(Color.WHITE, 8)));
+        button.setOnClickListener(view -> action.run());
+        return button;
+    }
+
+    private void loadBranding() {
+        try (java.io.InputStream stream = getAssets().open("branding/tokens.json")) {
+            java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = stream.read(buffer)) != -1) output.write(buffer, 0, count);
+            JSONObject colors = new JSONObject(output.toString("UTF-8")).getJSONObject("colors");
+            BG = Color.parseColor(colors.getString("background"));
+            CARD = Color.parseColor(colors.getString("surface"));
+            TEXT = Color.parseColor(colors.getString("text"));
+            MUTED = Color.parseColor(colors.getString("muted"));
+            ACCENT = Color.parseColor(colors.getString("accent"));
+            DANGER = Color.parseColor(colors.getString("danger"));
+        } catch (Exception error) {
+            android.util.Log.w("Branding", "Using built-in colors", error);
+        }
+    }
+
+    private Bitmap loadBitmap(String name) {
+        try (java.io.InputStream stream = getAssets().open("branding/png/" + name + ".png")) {
+            return BitmapFactory.decodeStream(stream);
+        } catch (Exception error) {
+            android.util.Log.w("Branding", "Could not load " + name, error);
+            return null;
+        }
+    }
+
+    private void setButtonIcon(Button button, String name, int tint) {
+        Bitmap bitmap = loadBitmap(name);
+        if (bitmap == null) return;
+        BitmapDrawable icon = new BitmapDrawable(getResources(), bitmap);
+        icon.setTint(tint);
+        icon.setBounds(0, 0, dp(17), dp(17));
+        button.setCompoundDrawables(icon, null, null, null);
+        button.setCompoundDrawablePadding(dp(6));
+    }
+
+    private void styleTab(Button button, boolean active) {
+        button.setTextColor(active ? BG : MUTED);
+        GradientDrawable content = round(active ? ACCENT : CARD, 8);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3368d5bd), content, round(Color.WHITE, 8)));
+        for (int i = 0; i < tabBtns.length; i++) {
+            if (tabBtns[i] == button) setButtonIcon(button, ICONS[i], active ? BG : MUTED);
+        }
+    }
+
+    private LinearLayout row(View... views) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        for (int i = 0; i < views.length; i++) {
+            View view = views[i];
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(i == 0 ? 0 : -2, -2);
+            if (i == 0) params.weight = 1;
+            params.setMargins(dp(2), dp(2), dp(2), dp(2));
+            row.addView(view, params);
+        }
+        return row;
+    }
+
+    private void addMetric(LinearLayout row, String name, String value) {
+        LinearLayout metric = new LinearLayout(this);
+        metric.setOrientation(LinearLayout.VERTICAL);
+        metric.setPadding(dp(7), dp(7), dp(7), dp(7));
+        metric.setBackground(round(Color.rgb(19, 24, 31), 8));
+        metric.addView(text(name, 10, MUTED, false));
+        metric.addView(text(value, 14, TEXT, true));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -2, 1);
+        params.setMargins(dp(2), dp(4), dp(2), 0);
+        row.addView(metric, params);
+    }
+
+    private GradientDrawable round(int color, int radius) {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setColor(color);
+        shape.setCornerRadius(dp(radius));
+        return shape;
+    }
+
+    private View spacer(int height) {
+        View view = new View(this);
+        view.setLayoutParams(new LinearLayout.LayoutParams(1, dp(height)));
+        return view;
     }
 
     private void ask(String title, String initial, int variation, Consumer<String> ok) {
-        EditText e = new EditText(this);
-        e.setInputType(variation == InputType.TYPE_CLASS_NUMBER ? variation : InputType.TYPE_CLASS_TEXT | variation);
-        e.setText(initial);
-        new AlertDialog.Builder(this).setTitle(title).setView(e)
-                .setPositiveButton("OK", (d, w) -> {
-                    String v = e.getText().toString().trim();
-                    if (!v.isEmpty() && !Ctl.connected) toast("daemon not connected");
-                    else if (!v.isEmpty()) ok.accept(v);
+        EditText input = new EditText(this);
+        input.setInputType(variation == InputType.TYPE_CLASS_NUMBER ? variation : InputType.TYPE_CLASS_TEXT | variation);
+        input.setText(initial);
+        input.setTextColor(TEXT);
+        input.setHintTextColor(MUTED);
+        int pad = dp(18);
+        input.setPadding(pad, pad, pad, pad);
+        new AlertDialog.Builder(this).setTitle(title).setView(input)
+                .setPositiveButton("Save", (dialog, which) -> {
+                    String value = input.getText().toString().trim();
+                    if (!value.isEmpty() && !Ctl.connected) toast("Daemon not connected");
+                    else if (!value.isEmpty() || title.contains("proxy") || title.contains("DNS") || title.contains("TUN interface")) ok.accept(value);
                 })
                 .setNegativeButton("Cancel", null).show();
     }
 
     private void choose(String title, String[] items, IntConsumer pick) {
-        new AlertDialog.Builder(this).setTitle(title).setItems(items, (d, w) -> pick.accept(w)).show();
+        new AlertDialog.Builder(this).setTitle(title).setItems(items, (dialog, which) -> pick.accept(which)).show();
     }
 
-    private void confirm(String q, Runnable yes) {
-        new AlertDialog.Builder(this).setMessage(q).setPositiveButton("Yes", (d, w) -> yes.run()).setNegativeButton("No", null).show();
+    private void confirm(String question, Runnable yes) {
+        new AlertDialog.Builder(this).setMessage(question).setPositiveButton("Confirm", (dialog, which) -> yes.run()).setNegativeButton("Cancel", null).show();
     }
 
-    /** The sub only appears once its fetch ends (up to ~30s); say so, and where the result lands. */
+    private void copy(String value) {
+        ClipboardManager clipboard = getSystemService(ClipboardManager.class);
+        clipboard.setPrimaryClip(ClipData.newPlainText("SOCKS5 address", value));
+        toast("Copied to clipboard");
+    }
+
+    private static String tunSlot(JSONObject st) {
+        JSONArray slots = st.optJSONArray("slots");
+        String wanted = st.optString("tun_slot"), first = "";
+        for (int i = 0; slots != null && i < slots.length(); i++) {
+            JSONObject slot = slots.optJSONObject(i);
+            if (!slot.optBoolean("enabled")) continue;
+            if (first.isEmpty()) first = slot.optString("name");
+            if (slot.optString("name").equals(wanted)) return wanted;
+        }
+        return first;
+    }
+
+    private static String listenHost(JSONObject st) {
+        String address = st.optString("listen_addr");
+        return address.isEmpty() ? "0.0.0.0" : address;
+    }
+
+    private static int freePort(JSONObject st) {
+        int base = st.optInt("listen_port", 2084);
+        List<Integer> used = new ArrayList<>();
+        used.add(base); used.add(base + 1);
+        JSONArray slots = st.optJSONArray("slots");
+        for (int i = 0; slots != null && i < slots.length(); i++) {
+            int port = slots.optJSONObject(i).optInt("port");
+            used.add(port); used.add(port + 1);
+        }
+        for (int port = base + 2; port < 65535; port++) if (!used.contains(port) && !used.contains(port + 1)) return port;
+        return 0;
+    }
+
+    private static String okCount(JSONArray probes) {
+        int ok = 0;
+        for (int i = 0; probes != null && i < probes.length(); i++) if (probes.optJSONObject(i).optBoolean("OK")) ok++;
+        return ok + "/" + (probes == null ? 0 : probes.length());
+    }
+
+    private static boolean anyMain(JSONObject st) {
+        JSONArray slots = st.optJSONArray("slots");
+        for (int i = 0; slots != null && i < slots.length(); i++) {
+            JSONArray mains = slots.optJSONObject(i).optJSONArray("mains");
+            if (mains != null && mains.length() > 0) return true;
+        }
+        return false;
+    }
+
+    private static String proto(String value) {
+        android.net.Uri uri = android.net.Uri.parse(value);
+        String flow = uri.getQueryParameter("flow"), security = uri.getQueryParameter("security"), network = uri.getQueryParameter("type");
+        String tag = flow != null && flow.contains("xtls-rprx-vision") ? "vision" : security == null || security.isEmpty() || security.equals("none") ? "plain" : security;
+        return network == null || network.isEmpty() || network.equals("tcp") ? tag : tag + " · " + network;
+    }
+
+    private static String mainName(String value) {
+        android.net.Uri uri = android.net.Uri.parse(value);
+        String fragment = uri.getFragment();
+        return fragment != null && !fragment.trim().isEmpty() ? fragment.trim() : uri.getHost();
+    }
+
+    private static String mainHost(String value) {
+        android.net.Uri uri = android.net.Uri.parse(value);
+        return uri.getHost() == null ? "Invalid VLESS URL" : uri.getHost() + (uri.getPort() > 0 ? ":" + uri.getPort() : "");
+    }
+
+    private static JSONArray copy(JSONArray value) {
+        try { return new JSONArray(value == null ? "[]" : value.toString()); } catch (Exception e) { return new JSONArray(); }
+    }
+
     private void fetching(String what) {
-        Core.log("→ " + what + " … (result below when the fetch ends)");
-        toast("fetching… result shows in the Log tab");
+        Core.log("→ " + what + " …");
+        toast("Fetching… results appear in Activity");
     }
 
-    private void failed(Exception e) {
-        Core.log("edit failed: " + e);
-        toast("edit failed: " + e.getMessage());
+    private void failed(Exception error) {
+        Core.log("Edit failed: " + error);
+        toast("Edit failed: " + error.getMessage());
     }
 
-    private void toast(String s) {
-        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    private void toast(String value) {
+        Toast.makeText(this, value, Toast.LENGTH_SHORT).show();
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 }

@@ -10,9 +10,10 @@
 
     <application
         android:label="clashvless"
+        android:icon="@drawable/clashvless_logo"
         android:extractNativeLibs="true"
         android:debuggable="true"
-        android:theme="@android:style/Theme.Material">
+        android:theme="@android:style/Theme.Material.NoActionBar">
 
         <activity
             android:name=".MainActivity"

@@ -1,6 +1,6 @@
 # clashvless
 
-A single-binary Go **CLI + TUI** that manages a Happ-gated **Remnawave** subscription and keeps a
+A single-binary Go **GUI + CLI + TUI** for desktop and Android that manages a Happ-gated **Remnawave** subscription and keeps a
 local **SOCKS5** proxy pointed at the best working exit — with automatic, tiered failover and an
 embedded [xray-core](https://github.com/XTLS/Xray-core) (no external `xray` needed).
 
@@ -19,7 +19,7 @@ embedded [xray-core](https://github.com/XTLS/Xray-core) (no external `xray` need
 - **Force-hop** — one toggle to skip T1 and prove a hop actually works.
 - **Happ-mimicking fetch** — one stable device identity (HWID + User-Agent) reused for every fetch,
   so you occupy exactly one panel device slot (never burns a fresh one).
-- **Live Bubble Tea dashboard** — Status / Subs / Main / Log / Config, everything editable live.
+- **Shared responsive GUI** — Overview / Subscriptions / Exit routes / Activity / Settings on desktop and Android, plus the original Bubble Tea TUI.
 
 ## Screenshots
 
@@ -31,43 +31,57 @@ embedded [xray-core](https://github.com/XTLS/Xray-core) (no external `xray` need
 
 ## Build
 
-Requires Go 1.26+. Dependencies are vendored, so builds are hermetic and offline.
+Requires Go 1.26+ and a C compiler for the native desktop window. Dependencies are vendored, so builds are hermetic and offline. Desktop uses native Fyne widgets; Android uses native Android widgets.
 
 ```sh
 git clone https://github.com/prodmesecond-glitch/clash_vless
 cd clash_vless
-go -C app build -o ../dist/clashvless .
+./build.sh
 ```
+
+On Windows this creates `dist/clashvless.exe` as a native windowed application (no console window) and
+`dist/clashvless-cli.exe` for terminal commands. On other desktop platforms it creates `dist/clashvless`.
+To build the Windows GUI directly:
+
+```sh
+go -C app build -ldflags="-H=windowsgui" -o ../dist/clashvless.exe .
+```
+
+## Brand assets
+
+The reusable Route Signal identity lives in [`app/branding`](app/branding): vector logo, custom SVG icons,
+Android-ready PNGs, color/spacing tokens, and embedded Go helpers. Desktop and Android both consume this
+folder. See [`app/branding/README.md`](app/branding/README.md) for integration examples.
 
 ## Quick start
 
-Just open the dashboard — on a fresh install it runs a **guided setup** (add sub → fetch → add exit),
-no shell needed:
+Open the graphical dashboard. The same responsive interface runs on desktop and Android, with live
+connection health, subscriptions, exit routes, activity, and all engine settings:
 
 ```sh
-clashvless                               # or: clashvless tui
+clashvless                               # GUI; use `clashvless tui` for the terminal UI
 ```
 
-Then point your apps at `socks5://127.0.0.1:2084`.
+On a fresh install, add a subscription in **Subscriptions**, then add a final VLESS exit in
+**Exit routes**. Point your apps at `socks5://127.0.0.1:2084`.
 
 ### Two ways to run
 
-The TUI checks whether a daemon's control socket is already up: if so it **attaches** to it; if not it
+The GUI checks whether a daemon's control socket is already up: if so it **attaches** to it; if not it
 **starts its own engine in-process** for the session. Pick whichever fits:
 
-**1. Interactive.** The engine lives inside the TUI and stops when you close it — simplest, good for
-setup and occasional use. The header shows `· embedded`.
+**1. Interactive.** The engine lives inside the GUI process and stops when you close it — simplest, good for
+setup and occasional use. The header shows `Desktop · local session`.
 ```sh
-clashvless                               # TUI + its own engine
+clashvless                               # GUI + its own engine
 ```
 
 **2. Persistent daemon.** Keep the proxy serving after you close the dashboard (background / service).
-The header shows `· daemon`.
 ```sh
 clashvless run                           # blocking daemon: SOCKS + control socket, auto T1→T2→T3
-clashvless tui                           # attaches to it  (or `clashvless status` for a one-shot)
+clashvless gui                           # attach the GUI (or `clashvless status` for a one-shot)
 ```
-`run` idles even with no exit yet — open the TUI to set one up. Prefer the shell? You still can:
+`run` idles even with no exit yet — open the GUI to set one up. Prefer the shell? You still can:
 
 ```sh
 clashvless add '<subscription-url>'      # add a sub (fetches its nodes)
@@ -89,7 +103,8 @@ clashvless main add '<vless://…>'         # add a final exit (plain hops freel
 | `tun [on\|off\|status]` | system-wide TUN capture (needs a root/admin daemon — see below) |
 | `tun dns real-net\|static` · `tun dns <ip>\|auto` | DNS mode (resolve on your LAN vs via the exit) · set/reset the static resolver |
 | `tun lan bypass\|tunnel` | keep private/LAN ranges off the tunnel (default) or route them through the exit |
-| `tui` | the dashboard (default with no args) |
+| `gui` | the graphical desktop dashboard (default with no args) |
+| `tui` | the terminal dashboard |
 | `whoami` | show this device's panel identity |
 
 Flags: `--config <path>` (alternate state file/dir — e.g. keep real and demo profiles) ·
