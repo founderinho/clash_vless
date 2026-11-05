@@ -19,7 +19,6 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
-import android.view.animation.DecelerateInterpolator;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
@@ -55,9 +54,9 @@ public class MainActivity extends Activity {
     private TextView connectionLabel;
     private Switch vpnSwitch;
     private final Button[] tabBtns = new Button[TABS.length];
-    private FrameLayout contentFrame, overviewOverlay;
-    private LinearLayout body, overviewBody;
-    private ScrollView scroll, overviewScroll;
+    private FrameLayout contentFrame;
+    private LinearLayout body;
+    private ScrollView scroll;
     private TextView logView;
 
     @Override
@@ -142,9 +141,8 @@ public class MainActivity extends Activity {
         super.onStart();
         Core.uiVisible = true;
         Ctl.listener = stateChanged -> runOnUiThread(() -> {
-            renderHead();
-            if (overviewOverlay != null) updateOverviewContent();
-            else if (stateChanged && tab == CONFIG) render();
+            if (tab == STATUS || (stateChanged && tab == CONFIG)) render();
+            else renderHead();
         });
         render();
     }
@@ -159,11 +157,6 @@ public class MainActivity extends Activity {
     }
 
     private void navigate(int selected) {
-        if (selected == STATUS) {
-            showOverview();
-            return;
-        }
-        hideOverview(false);
         tab = selected;
         render();
     }
@@ -171,10 +164,6 @@ public class MainActivity extends Activity {
     private void render() {
         renderHead();
         for (int i = 0; i < TABS.length; i++) styleTab(tabBtns[i], i == tab);
-        if (tab == STATUS) {
-            showOverview();
-            return;
-        }
         body.removeAllViews();
         if (tab != LOG) Core.setListener(null);
         JSONObject st = Ctl.state;
@@ -182,7 +171,8 @@ public class MainActivity extends Activity {
             body.addView(card("Connecting", "Starting the local engine and reading its state…"));
             return;
         }
-        if (tab == LOG) renderLog();
+        if (tab == STATUS) renderStatus(st, body);
+        else if (tab == LOG) renderLog();
         else renderConfig(st);
     }
 
@@ -194,81 +184,6 @@ public class MainActivity extends Activity {
         switchUpdating = true;
         vpnSwitch.setChecked(VpnSvc.running);
         switchUpdating = false;
-    }
-
-    private void showOverview() {
-        tab = STATUS;
-        renderHead();
-        for (int i = 0; i < TABS.length; i++) styleTab(tabBtns[i], i == tab);
-        Core.setListener(null);
-        if (overviewOverlay != null) {
-            updateOverviewContent();
-            return;
-        }
-        overviewOverlay = new FrameLayout(this);
-        View scrim = new View(this);
-        scrim.setBackgroundColor(0x99000000);
-        scrim.setAlpha(0);
-        scrim.setOnClickListener(view -> hideOverview(true));
-        overviewOverlay.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
-
-        LinearLayout sheet = new LinearLayout(this);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(dp(14), dp(7), dp(14), dp(16));
-        GradientDrawable background = round(CARD, 20);
-        background.setCornerRadii(new float[]{dp(20), dp(20), dp(20), dp(20), 0, 0, 0, 0});
-        sheet.setBackground(background);
-        View handle = new View(this);
-        handle.setBackground(round(MUTED, 2));
-        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(38), dp(4));
-        handleParams.gravity = Gravity.CENTER_HORIZONTAL;
-        handleParams.bottomMargin = dp(5);
-        sheet.addView(handle, handleParams);
-        LinearLayout heading = row(text("Overview", 19, TEXT, true), btn("Close", false, () -> hideOverview(true)));
-        sheet.addView(heading);
-        overviewScroll = new ScrollView(this);
-        overviewBody = new LinearLayout(this);
-        overviewBody.setOrientation(LinearLayout.VERTICAL);
-        overviewBody.setPadding(0, dp(4), 0, dp(8));
-        overviewScroll.addView(overviewBody, new ScrollView.LayoutParams(-1, -2));
-        sheet.addView(overviewScroll, new LinearLayout.LayoutParams(-1, 0, 1));
-        int height = Math.round(getResources().getDisplayMetrics().heightPixels * 0.74f);
-        FrameLayout.LayoutParams sheetParams = new FrameLayout.LayoutParams(-1, height, Gravity.BOTTOM);
-        overviewOverlay.addView(sheet, sheetParams);
-        contentFrame.addView(overviewOverlay, new FrameLayout.LayoutParams(-1, -1));
-        updateOverviewContent();
-        scrim.animate().alpha(1).setDuration(220).start();
-        sheet.setTranslationY(height);
-        sheet.animate().translationY(0).setDuration(280).setInterpolator(new DecelerateInterpolator()).start();
-    }
-
-    private void updateOverviewContent() {
-        if (overviewOverlay == null || overviewBody == null) return;
-        overviewBody.removeAllViews();
-        JSONObject st = Ctl.state;
-        if (!Ctl.connected || st == null) overviewBody.addView(card("Connecting", "Starting the local engine and reading its state…"));
-        else renderStatus(st, overviewBody);
-    }
-
-    private void hideOverview(boolean animated) {
-        FrameLayout overlay = overviewOverlay;
-        if (overlay == null) return;
-        overviewOverlay = null;
-        overviewBody = null;
-        overviewScroll = null;
-        if (!animated) {
-            contentFrame.removeView(overlay);
-            return;
-        }
-        View sheet = overlay.getChildAt(1);
-        overlay.getChildAt(0).animate().alpha(0).setDuration(180).start();
-        sheet.animate().translationY(sheet.getHeight()).setDuration(200).withEndAction(() -> contentFrame.removeView(overlay)).start();
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (overviewOverlay != null) hideOverview(true);
-        else super.onBackPressed();
     }
 
     static String line(JSONObject s) {

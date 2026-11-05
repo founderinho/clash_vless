@@ -73,8 +73,7 @@ public class VpnSvc extends VpnService {
                 new Intent(this, VpnSvc.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return builder
-                .setSmallIcon(R.drawable.clashvless_status)
-                .setLargeIcon(android.graphics.BitmapFactory.decodeResource(getResources(), R.drawable.clashvless_logo))
+                .setSmallIcon(R.drawable.clashvless_logo)
                 .setColor(0xFF68D5BD)
                 .setContentTitle(online ? "clashvless · Connected" : "clashvless · Connecting")
                 .setContentText(details)

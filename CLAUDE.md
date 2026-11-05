@@ -88,8 +88,8 @@ or a **system-wide TUN** — with automatic tiered failover.
   off stops it. **UI** (`MainActivity`, bare, programmatic views) is a **control client like the TUI** (`Ctl`:
   `LocalSocket` → `control.sock`, JSON lines; `state`/`status` events in, `patch`/`addsub`/`rmsub`/`refetch`/`kick`
   out), so every edit applies **live** to the running daemon, VPN up or not. The footer has **Settings**,
-  **Overview**, and **Log**. Overview is an animated bottom sheet with connection metrics, route, endpoints,
-  and pools; Settings and Log switch the main page. A native switch in the header controls the VPN and displays
+  **Overview**, and **Log**. All three are page switches; Overview contains connection metrics, route,
+  endpoints, and pools. A native switch in the header controls the VPN and displays
   Disconnected/Connecting/Connected. Settings uses a section selector for network, VPN, routes, providers/nodes,
   updates, and device identity, retaining all former tab controls (including HWID and slot/main management).
   `VpnSvc` publishes a branded live notification with the selected route/latency and a Disconnect action.
