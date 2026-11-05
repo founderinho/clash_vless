@@ -13,7 +13,10 @@ import java.io.InputStreamReader;
 import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -24,8 +27,28 @@ import java.util.concurrent.TimeUnit;
 final class Core {
     interface Listener { void onLine(String line); }
 
-    private static final int LOG_MAX = 64 * 1024;
-    private static final StringBuilder log = new StringBuilder();
+    static final class Entry {
+        final String line, level, module;
+
+        Entry(String line) {
+            this.line = line;
+            String level = "INFO", module = "engine";
+            String[] parts = line.split(" ", 4);
+            if (parts.length == 4 && parts[0].length() == 12
+                    && Arrays.asList("INFO", "WARN", "ERROR", "DEBUG").contains(parts[1])) {
+                String[] body = parts[3].split(" ", 2);
+                if (body.length == 2) {
+                    level = parts[1];
+                    module = body[0].split("/", 2)[0];
+                }
+            }
+            this.level = level;
+            this.module = module;
+        }
+    }
+
+    private static final int LOG_MAX = 2000;
+    private static final ArrayList<Entry> log = new ArrayList<>();
     private static Listener listener;
 
     static volatile boolean uiVisible;
@@ -33,18 +56,54 @@ final class Core {
     private static boolean daemonVpn;
 
     static synchronized void log(String line) {
-        log.append(line).append('\n');
-        if (log.length() > LOG_MAX) log.delete(0, log.length() - LOG_MAX);
+        log.add(new Entry(line));
+        if (log.size() > LOG_MAX) log.remove(0);
         if (listener != null) listener.onLine(line);
     }
 
-    static synchronized String setListener(Listener l) {
+    static synchronized void setListener(Listener l) {
         listener = l;
-        return log.toString();
     }
 
     static synchronized void clearLog() {
-        log.setLength(0);
+        log.clear();
+    }
+
+    static synchronized List<String> modules() {
+        Set<String> found = new LinkedHashSet<>();
+        for (Entry entry : log) found.add(entry.module);
+        List<String> result = new ArrayList<>(found);
+        java.util.Collections.sort(result);
+        return result;
+    }
+
+    static synchronized String filteredLog(Set<String> levels, String module, String query) {
+        StringBuilder result = new StringBuilder();
+        for (Entry entry : log) {
+            if (!levels.contains(entry.level)) continue;
+            if (!module.isEmpty() && !module.equals(entry.module)) continue;
+            if (!textMatches(entry.line, query)) continue;
+            result.append(entry.line).append('\n');
+        }
+        return result.toString();
+    }
+
+    private static boolean textMatches(String line, String query) {
+        query = query.trim();
+        if (query.isEmpty()) return true;
+        String text = line.toLowerCase(Locale.ROOT);
+        for (String alternative : query.split(" \\| ")) {
+            boolean matches = true;
+            int terms = 0;
+            for (String term : alternative.split(" & ")) {
+                term = term.trim().toLowerCase(Locale.ROOT);
+                if (term.isEmpty()) continue;
+                terms++;
+                if (!text.contains(term)) { matches = false; break; }
+            }
+            if (matches && terms > 0) return true;
+        }
+        return false;
     }
 
     static String bin(Context c) {

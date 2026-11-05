@@ -13,6 +13,7 @@ import (
 
 	gvisoripv4 "gvisor.dev/gvisor/pkg/tcpip/network/ipv4" // TUN ICMP-echo toggle (vendored gVisor patch)
 
+	"clashvless/internal/loghub"
 	"clashvless/internal/store"
 	"clashvless/internal/tun"
 	"clashvless/internal/xray"
@@ -76,7 +77,7 @@ type Supervisor struct {
 	mu       sync.Mutex // guards st, status (aggregate), pools, tun fields
 	status   Status
 	onChange func(Status)
-	onLog    func(string)
+	onLog    func(loghub.Record)
 
 	// fastest-first pool ordering, shared by every slot runner.
 	rankedCountry []*store.Node
@@ -146,9 +147,8 @@ type plan struct {
 }
 
 // NewSupervisor builds a supervisor. onChange (may be nil) receives a fresh
-// Status snapshot on every state change; onLog (may be nil) receives one-line
-// activity events for a log view.
-func NewSupervisor(st *store.State, onChange func(Status), onLog func(string)) *Supervisor {
+// Status snapshot on every state change; onLog receives structured activity events.
+func NewSupervisor(st *store.State, onChange func(Status), onLog func(loghub.Record)) *Supervisor {
 	s := &Supervisor{
 		st:       st,
 		listen:   st.ListenHost(),
@@ -162,13 +162,17 @@ func NewSupervisor(st *store.State, onChange func(Status), onLog func(string)) *
 	return s
 }
 
-// Log emits a line on the daemon's log (stdout under `run` + every control client).
-func (s *Supervisor) Log(line string) { s.logf("%s", line) }
+// Log emits an informational engine record for compatibility with existing callers.
+func (s *Supervisor) Log(line string) { s.Logf(loghub.Info, "engine", "", "%s", line) }
+
+func (s *Supervisor) Logf(level loghub.Level, module, element, format string, a ...any) {
+	if s.onLog != nil {
+		s.onLog(loghub.New(level, module, element, format, a...))
+	}
+}
 
 func (s *Supervisor) logf(format string, a ...any) {
-	if s.onLog != nil {
-		s.onLog(fmt.Sprintf(format, a...))
-	}
+	s.Logf(loghub.Info, "engine", "", format, a...)
 }
 
 // --- dynamic config (read from the store under lock, so the TUI config tab
@@ -556,7 +560,15 @@ func (s *Supervisor) Kick() {
 // --- the cycle ---------------------------------------------------------------
 
 func (r *slotRunner) logf(format string, a ...any) {
-	r.sup.logf("["+r.name+"] "+format, a...)
+	r.sup.Logf(loghub.Info, "route", r.name, format, a...)
+}
+
+func (r *slotRunner) warnf(format string, a ...any) {
+	r.sup.Logf(loghub.Warning, "route", r.name, format, a...)
+}
+
+func (r *slotRunner) errorf(format string, a ...any) {
+	r.sup.Logf(loghub.Error, "route", r.name, format, a...)
 }
 
 func (r *slotRunner) cycle(ctx context.Context) {
@@ -572,8 +584,8 @@ func (r *slotRunner) cycle(ctx context.Context) {
 	pin := r.sup.st.PinEntry
 	r.sup.mu.Unlock()
 
-	directOB := namedOutbounds(directMains)
-	hopOB := namedOutbounds(hopMains)
+	directOB := r.namedOutbounds(directMains)
+	hopOB := r.namedOutbounds(hopMains)
 	if len(directOB) == 0 && len(hopOB) == 0 {
 		r.emit(0, "", 0, "no usable main — add/enable one in this slot", "")
 		return
@@ -650,7 +662,7 @@ func (r *slotRunner) cycle(ctx context.Context) {
 	if !hasLive || r.failStreak >= r.sup.downThresh() {
 		if best, ok := r.bestWorking(ctx, directOB, hopOB, lo, hi); ok {
 			if e := r.apply(best); e != nil {
-				r.logf("apply %s failed: %v", best.key, e)
+				r.errorf("apply %s failed: %v", best.key, e)
 				r.emit(0, "", 0, e.Error(), "")
 				return
 			}
@@ -660,12 +672,12 @@ func (r *slotRunner) cycle(ctx context.Context) {
 			r.emitPlan(best, "")
 			return
 		}
-		r.logf("✖ all tiers unreachable")
+		r.errorf("all tiers unreachable")
 		r.emit(0, "", 0, "no main reachable — direct nor via any hop", "")
 		return
 	}
 	// Tolerate a transient blip before switching away.
-	r.logf("current chain failing (%d/%d)…", r.failStreak, r.sup.downThresh())
+	r.warnf("current chain failing (%d/%d)…", r.failStreak, r.sup.downThresh())
 	r.emit(curTier, curEntry, 0, "", fmt.Sprintf("current failing (%d/%d)…", r.failStreak, r.sup.downThresh()))
 }
 
@@ -786,11 +798,12 @@ type namedOB struct {
 	ob   json.RawMessage
 }
 
-func namedOutbounds(mains []store.Main) []namedOB {
+func (r *slotRunner) namedOutbounds(mains []store.Main) []namedOB {
 	var out []namedOB
 	for _, m := range mains {
 		ob, err := xray.VlessToOutbound(m.URL, "main")
 		if err != nil {
+			r.errorf("invalid exit %q: %v", m.Name, err)
 			continue
 		}
 		out = append(out, namedOB{name: m.Name, ob: ob})

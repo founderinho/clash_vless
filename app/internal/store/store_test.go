@@ -23,11 +23,11 @@ func TestIsPlain(t *testing.T) {
 
 func TestProtoTag(t *testing.T) {
 	url := map[string]string{
-		"vless://a@h:444?type=tcp&security=none":                        "plain",
-		"vless://a@h:443?type=xhttp&security=reality":                   "reality·xhttp",
+		"vless://a@h:444?type=tcp&security=none":                          "plain",
+		"vless://a@h:443?type=xhttp&security=reality":                     "reality·xhttp",
 		"vless://a@h:443?type=tcp&security=reality&flow=xtls-rprx-vision": "vision",
-		"vless://a@h:443?type=grpc&security=reality":                    "reality·grpc",
-		"vless://a@h:443?type=ws&security=tls":                          "tls·ws",
+		"vless://a@h:443?type=grpc&security=reality":                      "reality·grpc",
+		"vless://a@h:443?type=ws&security=tls":                            "tls·ws",
 	}
 	for u, want := range url {
 		if got := ProtoTag(u); got != want {
@@ -37,11 +37,22 @@ func TestProtoTag(t *testing.T) {
 	ob := map[string]string{
 		`{"settings":{"vnext":[{"users":[{"flow":"xtls-rprx-vision"}]}]},"streamSettings":{"network":"tcp","security":"reality"}}`: "vision",
 		`{"settings":{"vnext":[{"users":[{}]}]},"streamSettings":{"network":"grpc","security":"reality"}}`:                         "reality·grpc",
-		`{"settings":{"vnext":[{"users":[{}]}]},"streamSettings":{"network":"ws","security":"tls"}}`:                              "tls·ws",
+		`{"settings":{"vnext":[{"users":[{}]}]},"streamSettings":{"network":"ws","security":"tls"}}`:                               "tls·ws",
 	}
 	for j, want := range ob {
 		if got := OutboundProtoTag([]byte(j)); got != want {
 			t.Errorf("OutboundProtoTag = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestListenHost(t *testing.T) {
+	state := &State{}
+	if got := state.ListenHost(); got != "127.0.0.1" {
+		t.Fatalf("default ListenHost() = %q", got)
+	}
+	state.ListenAddr = "0.0.0.0"
+	if got := state.ListenHost(); got != "0.0.0.0" {
+		t.Fatalf("explicit LAN ListenHost() = %q", got)
 	}
 }

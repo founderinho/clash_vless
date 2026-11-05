@@ -63,7 +63,12 @@ clashvless                               # GUI; use `clashvless tui` for the ter
 ```
 
 On a fresh install, add a subscription in **Subscriptions**, then add a final VLESS exit in
-**Exit routes**. Point your apps at `socks5://127.0.0.1:2084`.
+**Exit routes**. Point your apps at `socks5://127.0.0.1:2084`. Listeners are loopback-only by default;
+enable **Allow LAN connections** explicitly if other devices need access.
+
+The **Activity** page shares structured engine/xray records with the CLI and TUI. Filter by severity,
+module, or text (` & ` requires every term; ` | ` separates alternatives), with Basic/All/Errors presets,
+record counts, clear, and click-to-copy. Android provides the same severity, module, and text filters.
 
 ### Two ways to run
 

@@ -42,6 +42,24 @@ func RegisterHandler(handler Handler) {
 	logHandler.Set(handler)
 }
 
+// clashvless: an observer survives xray's per-instance RegisterHandler calls.
+var observer syncHandler
+
+func RegisterObserver(handler Handler) {
+	observer.Set(handler)
+}
+
+// Observe returns true when the observer consumed a message accepted by app/log.
+func Observe(msg Message) bool {
+	observer.RLock()
+	defer observer.RUnlock()
+	if observer.Handler == nil {
+		return false
+	}
+	observer.Handler.Handle(msg)
+	return true
+}
+
 type syncHandler struct {
 	sync.RWMutex
 	Handler

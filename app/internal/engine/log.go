@@ -4,44 +4,58 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"time"
 
+	"clashvless/internal/loghub"
 	xlog "github.com/xtls/xray-core/common/log"
 )
 
-// funcSink is an xray log Handler that forwards every message to fn.
-type funcSink struct{ fn func(string) }
+type funcSink struct{ fn func(loghub.Record) }
 
 func (h funcSink) Handle(m xlog.Message) {
-	if h.fn != nil {
-		h.fn(m.String())
+	if h.fn == nil {
+		return
 	}
+	level := loghub.Info
+	element := "core"
+	text := m.String()
+	switch m.(type) {
+	case *xlog.AccessMessage, *xlog.DNSLog:
+		level, element = loghub.Debug, "access"
+	}
+	if message, ok := m.(*xlog.GeneralMessage); ok {
+		text = fmt.Sprint(message.Content)
+		switch message.Severity {
+		case xlog.Severity_Error:
+			level = loghub.Error
+		case xlog.Severity_Warning:
+			level = loghub.Warning
+		case xlog.Severity_Debug:
+			level = loghub.Debug
+		}
+	}
+	h.fn(loghub.New(level, "xray", element, "%s", text))
 }
 
-// SetLogSink redirects xray-core's process-wide log output to fn instead of the
-// terminal — including messages emitted at config-parse time (the deprecated-
-// transport warnings), which the per-config loglevel can't suppress. Call once,
-// before starting instances; used by the TUI-embedded daemon so xray never writes
-// to the alt-screen. A no-op fn discards.
-func SetLogSink(fn func(string)) {
-	xlog.RegisterHandler(funcSink{fn})
+// SetLogSink redirects startup and per-instance xray output as structured records.
+func SetLogSink(fn func(loghub.Record)) {
+	sink := funcSink{fn}
+	xlog.RegisterHandler(sink)
+	xlog.RegisterObserver(sink)
 }
 
-// EventFileSink returns an onLog callback that forwards to base and also appends
-// timestamped lines to path (used by --debug). If the file can't be opened it
-// falls back to base alone.
-func EventFileSink(path string, base func(string)) func(string) {
+// EventFileSink forwards records to base and mirrors them to a 0600 log file.
+func EventFileSink(path string, base func(loghub.Record)) func(loghub.Record) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return base
 	}
 	var mu sync.Mutex
-	return func(l string) {
+	return func(record loghub.Record) {
 		if base != nil {
-			base(l)
+			base(record)
 		}
 		mu.Lock()
-		fmt.Fprintf(f, "%s  %s\n", time.Now().Format("15:04:05"), l)
+		_, _ = fmt.Fprintln(f, record.String())
 		mu.Unlock()
 	}
 }

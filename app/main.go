@@ -24,6 +24,7 @@ import (
 	"clashvless/internal/engine"
 	appgui "clashvless/internal/gui"
 	"clashvless/internal/happ"
+	"clashvless/internal/loghub"
 	"clashvless/internal/store"
 	"clashvless/internal/tui"
 	"clashvless/internal/tun"
@@ -266,12 +267,6 @@ func cmdRun(st *store.State, debug bool) error {
 	if err := platformTunFd(st); err != nil {
 		return err
 	}
-	if !st.AnyUsableMain() {
-		fmt.Println("note: no main yet — the daemon will idle (DOWN). Open the TUI to run setup: clashvless tui")
-	}
-	if len(st.ActiveNodes()) == 0 {
-		fmt.Println("note: no cached nodes — only T1 (direct main) is possible until you add/fetch a sub.")
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -286,19 +281,26 @@ func cmdRun(st *store.State, debug bool) error {
 	}
 
 	hub := control.NewHub()
-	sink := func(l string) { fmt.Println("  ·", l) }
+	sink := func(record loghub.Record) { fmt.Println(record.String()) }
 	if debug {
 		sink = engine.EventFileSink(st.EventsLogPath(), sink)
 		fmt.Println("debug: mirroring events →", st.EventsLogPath())
 	}
-	onLog := func(l string) { sink(l); hub.Broadcast(control.Event{Type: "log", Line: l}) }
+	onLog := func(record loghub.Record) { sink(record); hub.Broadcast(control.LogEvent(record)) }
 	onStatus := func(s engine.Status) { printStatus(s); hub.Broadcast(control.Event{Type: "status", Status: &s}) }
 
 	sup := engine.NewSupervisor(st, onStatus, onLog)
+	engine.SetLogSink(onLog)
+	if !st.AnyUsableMain() {
+		sup.Logf(loghub.Warning, "config", "routes", "no usable exit; add or enable one in Exit routes")
+	}
+	if len(st.ActiveNodes()) == 0 {
+		sup.Logf(loghub.Warning, "config", "subscriptions", "no cached entry nodes; only direct exits are possible")
+	}
 	sock := st.ControlSocketPath()
 	go func() {
 		if err := control.NewServer(sup, hub).Serve(ctx, sock); err != nil {
-			fmt.Fprintln(os.Stderr, "control server:", err)
+			sup.Logf(loghub.Error, "control", "server", "%v", err)
 		}
 	}()
 
@@ -306,11 +308,11 @@ func cmdRun(st *store.State, debug bool) error {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sig
-		fmt.Println("\n■ stopping.")
+		sup.Logf(loghub.Info, "daemon", "lifecycle", "stopping")
 		cancel()
 	}()
 
-	fmt.Printf("▶ daemon: socks5://%s:%d · control %s — Ctrl-C to stop\n", st.ListenHost(), st.ListenPort, sock)
+	sup.Logf(loghub.Info, "daemon", "lifecycle", "started; SOCKS5 %s:%d; control %s", st.ListenHost(), st.ListenPort, sock)
 	return sup.Run(ctx)
 }
 
@@ -363,19 +365,27 @@ func runTUI(st *store.State) error {
 	return tui.RunClient(client, true)
 }
 
-// startEmbeddedDaemon runs the supervisor + control server in-process with silent
-// sinks (output goes to the attached UI over the socket, not stdout). Returns a stop func.
+// startEmbeddedDaemon routes all engine and xray records to the attached UI,
+// keeping them away from stdout even when the host is a terminal dashboard.
 func startEmbeddedDaemon(st *store.State) func() {
-	engine.SetLogSink(func(string) {}) // xray-core must not write over an attached UI
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := control.NewHub()
-	onLog := func(l string) { hub.Broadcast(control.Event{Type: "log", Line: l}) }
+	onLog := func(record loghub.Record) { hub.Broadcast(control.LogEvent(record)) }
 	onStatus := func(s engine.Status) { hub.Broadcast(control.Event{Type: "status", Status: &s}) }
 	sup := engine.NewSupervisor(st, onStatus, onLog)
-	sup.SetQuiet(true)                    // keep xray output away from the terminal UI
+	engine.SetLogSink(onLog)
 	_ = os.Remove(st.ControlSocketPath()) // clear any stale socket (no live daemon — Dial failed)
-	go func() { _ = control.NewServer(sup, hub).Serve(ctx, st.ControlSocketPath()) }()
-	go func() { _ = sup.Run(ctx) }()
+	go func() {
+		if err := control.NewServer(sup, hub).Serve(ctx, st.ControlSocketPath()); err != nil {
+			sup.Logf(loghub.Error, "control", "server", "%v", err)
+		}
+	}()
+	go func() {
+		if err := sup.Run(ctx); err != nil {
+			sup.Logf(loghub.Error, "daemon", "lifecycle", "%v", err)
+		}
+	}()
+	sup.Logf(loghub.Info, "daemon", "lifecycle", "embedded engine started; SOCKS5 %s:%d", st.ListenHost(), st.ListenPort)
 	return cancel
 }
 

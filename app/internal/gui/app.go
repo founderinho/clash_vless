@@ -22,6 +22,7 @@ import (
 	"clashvless/branding"
 	"clashvless/internal/control"
 	"clashvless/internal/engine"
+	"clashvless/internal/loghub"
 	"clashvless/internal/store"
 )
 
@@ -32,7 +33,9 @@ type dashboard struct {
 	embedded        bool
 	state           *store.State
 	status          engine.Status
-	logs            []string
+	logs            []loghub.Record
+	logFilter       loghub.Filter
+	logList         *widget.List
 	page            string
 	settingsSection string
 	nodeQuery       string
@@ -53,6 +56,7 @@ func RunClient(client *control.Client, embedded bool) error {
 	d := &dashboard{
 		app: a, window: w, client: client, embedded: embedded,
 		page: "overview", settingsSection: "Network & failover", nav: map[string]*widget.Button{},
+		logFilter: loghub.DefaultFilter(),
 	}
 	d.buildShell()
 	go d.readEvents()
@@ -79,12 +83,17 @@ func (d *dashboard) readEvents() {
 					}
 				}
 			case "log":
-				d.logs = append(d.logs, event.Line)
-				if len(d.logs) > 500 {
-					d.logs = d.logs[len(d.logs)-500:]
+				record := loghub.ParseLine(event.Line)
+				if event.Record != nil {
+					record = *event.Record
 				}
-				if d.page == "activity" {
-					d.render()
+				d.logs = append(d.logs, record)
+				if len(d.logs) > 2000 {
+					d.logs = d.logs[len(d.logs)-2000:]
+				}
+				if d.page == "activity" && d.logList != nil {
+					d.logList.Refresh()
+					d.logList.ScrollToBottom()
 				}
 			}
 		})

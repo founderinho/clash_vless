@@ -12,7 +12,11 @@ or a **system-wide TUN** — with automatic tiered failover.
   - `internal/store` — on-disk state (subs, cached nodes, **slots** = per-port failover pools of mains,
     stable device identity, tunables).
   - `internal/gui` — native Fyne desktop GUI. Its connection control is a clickable, pointer-cursor switch with the
-    same track/thumb shape and state colors as Android, rather than a drag-only slider.
+    same track/thumb shape and state colors as Android, rather than a drag-only slider. Activity is a virtualized,
+    2000-record view with severity/module/text filters (` & ` AND, ` | ` OR), presets, and click-to-copy.
+  - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
+    desktop, and Android. `control.Event.Record` carries structured fields while `Line` preserves compatibility.
+    Both embedded and standalone daemons route xray-core through the same hub; GUI mode no longer discards xray logs.
   - `internal/happ` — fetches a Remnawave sub (Happ 3.x mimic; optional SOCKS5 fetch proxy); parses
     base64 / URI-list / xray-JSON, building a `vless://` outbound for URI-list nodes so they're usable.
   - `internal/xray` — `vless://` → xray outbound, and full-config assembly (incl. entry→main chaining).
@@ -53,13 +57,15 @@ or a **system-wide TUN** — with automatic tiered failover.
     printing PASS/FAIL. Proves why chaining uses dialerProxy; re-run after any xray-core bump.
   - `cmd/tunprobe` — root/admin-only lab: starts JUST the TUN bridge, confirms xray creates the device,
     then tears down **without touching routing** (safe). Answers "does the native tun inbound work here?".
-- `app/vendor/` — vendored deps (committed; builds are hermetic/offline). Holds **two local patches**
+- `app/vendor/` — vendored deps (committed; builds are hermetic/offline). Holds **three local patches**
   (grep `clashvless`): (1) gVisor `network/ipv4` echo-reply gate for TUN ping — see **ICMP ping**; (2)
   `transport/internet/grpc/dial.go` **content-keys** the global gRPC client-conn cache. It was keyed by the
   `*MemoryStreamConfig` **pointer**, so each failover probe (a fresh throwaway instance → fresh pointer) missed
   the cache and stored a **new, never-closed `grpc.ClientConn`** (+ its goroutines) into an insert-only global
   map → ~2 GB/day leak with gRPC entry nodes. The patch hashes dest+transport+security+socket settings so all
-  probes/live dials to one node share **one bounded** conn. Re-apply **both** after any re-vendor.
+  probes/live dials to one node share **one bounded** conn. (3) xray `common/log` + `app/log` support an optional
+  observer after per-instance severity filtering, so the app receives structured xray records without duplicate
+  console output. Re-apply **all three** after any re-vendor.
 - `android/` — **Android app** (minimal UX, core only). No Gradle: `android/build.sh` does
   go → javac → d8 → aapt2 → zipalign → apksigner into `dist/clashvless.apk`. **minSdk 24** (Android 7; API-26
   calls are version-guarded), target 34. ABIs: **arm64** + **armeabi-v7a** + **x86_64** (for emulator tests), all built
@@ -92,7 +98,8 @@ or a **system-wide TUN** — with automatic tiered failover.
   `LocalSocket` → `control.sock`, JSON lines; `state`/`status` events in, `patch`/`addsub`/`rmsub`/`refetch`/`kick`
   out), so every edit applies **live** to the running daemon, VPN up or not. The footer has **Settings**,
   **Overview**, and **Log**. All three are page switches; Overview contains connection metrics, route,
-  endpoints, and pools. An enlarged native switch in the header controls the VPN and displays
+  endpoints, and pools. Log retains 2000 records and provides severity, module, and live text filters.
+  An enlarged native switch in the header controls the VPN and displays
   Disconnected/Connecting/Connected in a fixed-width, single-line label that cannot clip the final letters. Settings uses
   a bordered **Settings type** group with an inline accordion list: category choices expand beneath the selector with
   animated height and a right-edge chevron rotates to show state, pushing settings downward without overlapping the
@@ -132,7 +139,9 @@ Set `CLASHVLESS_PPROF=127.0.0.1:6060` to expose `net/http/pprof` on the daemon (
 for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor/`.
 
 ## Architecture essentials
-- **Topology**: per slot, a local SOCKS inbound → `main` outbound (the final exit).
+- **Topology**: per slot, a local SOCKS inbound → `main` outbound (the final exit). Empty `ListenAddr` means
+  `127.0.0.1`; LAN exposure requires an explicit `0.0.0.0` setting. Windows GUI builds use `-H=windowsgui`,
+  while the separate `clashvless-cli.exe` intentionally keeps the console subsystem.
 - **Slots** (`store.Slots`, managed in the TUI **Main** tab, CLI `slot`): the app now runs
   **multiple independent failover pools**, each a `Slot{Name, Port, Enabled, Mains []Main}`.
   A slot IS the old single-pool model — it keeps its own **best** main online on its **own SOCKS

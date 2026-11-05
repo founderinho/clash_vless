@@ -125,15 +125,15 @@ func (g *Instance) Handle(msg log.Message) {
 
 	switch msg := msg.(type) {
 	case *log.AccessMessage:
-		if g.accessLogger != nil {
+		if g.accessLogger != nil && !log.Observe(Msg) { // clashvless: optional structured observer
 			g.accessLogger.Handle(Msg)
 		}
 	case *log.DNSLog:
-		if g.dns && g.accessLogger != nil {
+		if g.dns && g.accessLogger != nil && !log.Observe(Msg) { // clashvless: optional structured observer
 			g.accessLogger.Handle(Msg)
 		}
 	case *log.GeneralMessage:
-		if g.errorLogger != nil && msg.Severity <= g.config.ErrorLogLevel {
+		if g.errorLogger != nil && msg.Severity <= g.config.ErrorLogLevel && !log.Observe(Msg) { // clashvless: optional structured observer
 			g.errorLogger.Handle(Msg)
 		}
 	default:

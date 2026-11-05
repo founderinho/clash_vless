@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"clashvless/internal/engine"
+	"clashvless/internal/loghub"
 	"clashvless/internal/store"
 )
 
@@ -17,7 +18,12 @@ func TestRenderAllPages(t *testing.T) {
 	a := test.NewApp()
 	defer a.Quit()
 	w := a.NewWindow("Test")
-	d := &dashboard{app: a, window: w, page: "overview", nav: map[string]*widget.Button{}}
+	d := &dashboard{app: a, window: w, page: "overview", nav: map[string]*widget.Button{}, logFilter: loghub.DefaultFilter()}
+	d.logs = []loghub.Record{
+		loghub.New(loghub.Info, "daemon", "lifecycle", "started"),
+		loghub.New(loghub.Error, "route", "main", "all tiers unreachable"),
+		loghub.New(loghub.Debug, "xray", "core", "debug detail"),
+	}
 	d.buildShell()
 	d.state = &store.State{
 		Slots:  []store.Slot{{Name: "main", Port: 2084, Enabled: true, Mains: []store.Main{{Name: "Example exit", URL: "vless://uuid@example.com:443?security=reality#Example", Enabled: true, AllowNoHop: true}}}},

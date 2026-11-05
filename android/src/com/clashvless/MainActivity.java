@@ -16,7 +16,9 @@ import android.graphics.drawable.RippleDrawable;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -33,7 +35,10 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 
@@ -56,6 +61,8 @@ public class MainActivity extends Activity {
     private LinearLayout body;
     private ScrollView scroll;
     private TextView logView;
+    private final Set<String> logLevels = new HashSet<>(Arrays.asList("INFO", "WARN", "ERROR"));
+    private String logModule = "", logQuery = "";
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -323,17 +330,65 @@ public class MainActivity extends Activity {
     }
 
     private void renderLog() {
-        LinearLayout logs = card("Daemon events", "Live engine activity | newest at the bottom");
-        logs.addView(btn("Clear view", false, () -> { Core.clearLog(); logView.setText(""); }));
+        LinearLayout filters = card("Log filters", "Choose severity and module, or search with & and |");
+        filters.addView(row(btn("Levels", false, this::chooseLogLevels),
+                btn(logModule.isEmpty() ? "All modules" : logModule, false, this::chooseLogModule)));
+        EditText query = new EditText(this);
+        query.setSingleLine(true);
+        query.setHint("Search: route & failed | timeout");
+        query.setHintTextColor(MUTED);
+        query.setTextColor(TEXT);
+        query.setTextSize(13);
+        query.setPadding(dp(10), 0, dp(10), 0);
+        query.setBackground(round(Color.rgb(32, 40, 51), 8));
+        query.setText(logQuery);
+        query.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            public void onTextChanged(CharSequence s, int start, int before, int count) { }
+            public void afterTextChanged(Editable s) { logQuery = s.toString(); refreshLog(); }
+        });
+        filters.addView(query, new LinearLayout.LayoutParams(-1, dp(46)));
+        body.addView(filters);
+
+        LinearLayout logs = card("Activity", "Live engine and xray events | newest at the bottom");
+        logs.addView(btn("Clear view", false, () -> { Core.clearLog(); refreshLog(); }));
         logView = text("", 12, MUTED, false);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setTextIsSelectable(true);
         logs.addView(logView);
         body.addView(logs);
-        logView.setText(Core.setListener(line -> runOnUiThread(() -> {
-            if (tab == LOG && logView != null) logView.append(line + "\n");
-        })));
+        Core.setListener(line -> runOnUiThread(this::refreshLog));
+        refreshLog();
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private void refreshLog() {
+        if (tab == LOG && logView != null) logView.setText(Core.filteredLog(logLevels, logModule, logQuery));
+    }
+
+    private void chooseLogLevels() {
+        String[] names = {"Info", "Warning", "Error", "Debug"};
+        String[] values = {"INFO", "WARN", "ERROR", "DEBUG"};
+        boolean[] checked = new boolean[values.length];
+        for (int i = 0; i < values.length; i++) checked[i] = logLevels.contains(values[i]);
+        new AlertDialog.Builder(this).setTitle("Visible log levels")
+                .setMultiChoiceItems(names, checked, (dialog, which, on) -> checked[which] = on)
+                .setPositiveButton("Apply", (dialog, which) -> {
+                    logLevels.clear();
+                    for (int i = 0; i < values.length; i++) if (checked[i]) logLevels.add(values[i]);
+                    refreshLog();
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    private void chooseLogModule() {
+        List<String> modules = new ArrayList<>();
+        modules.add("All modules");
+        modules.addAll(Core.modules());
+        String[] items = modules.toArray(new String[0]);
+        new AlertDialog.Builder(this).setTitle("Log module").setItems(items, (dialog, which) -> {
+            logModule = which == 0 ? "" : items[which];
+            render();
+        }).show();
     }
 
     private void renderConfig(JSONObject st) {
