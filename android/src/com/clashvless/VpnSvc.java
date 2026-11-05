@@ -66,16 +66,18 @@ public class VpnSvc extends VpnService {
         org.json.JSONObject status = Ctl.status;
         boolean online = status != null && status.optInt("Tier") > 0;
         String details = status == null ? "Preparing the local engine and VPN interface"
-                : online ? MainActivity.line(status) : "VPN is on · finding a working route";
+                : online ? MainActivity.line(status) : "VPN is on | finding a working route";
         PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent stop = PendingIntent.getService(this, 2,
                 new Intent(this, VpnSvc.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        android.graphics.drawable.Icon icon = android.graphics.drawable.Icon.createWithBitmap(
+                android.graphics.BitmapFactory.decodeResource(getResources(), R.drawable.clashvless_notification));
         return builder
-                .setSmallIcon(R.drawable.clashvless_logo)
+                .setSmallIcon(icon)
                 .setColor(0xFF68D5BD)
-                .setContentTitle(online ? "clashvless · Connected" : "clashvless · Connecting")
+                .setContentTitle(online ? "clashvless | Connected" : "clashvless | Connecting")
                 .setContentText(details)
                 .setStyle(new Notification.BigTextStyle().bigText(details))
                 .setContentIntent(open)
@@ -115,7 +117,7 @@ public class VpnSvc extends VpnService {
                     .establish();
             if (tun == null) throw new IllegalStateException("VPN permission not granted");
             sendFd(sock, tun.getFileDescriptor());
-            Core.log("▶ VPN up (tun fd handed to daemon)");
+            Core.log("> VPN up (tun fd handed to daemon)");
         } catch (Exception e) {
             Core.log("VPN start failed: " + e);
             shutdown();
@@ -152,7 +154,7 @@ public class VpnSvc extends VpnService {
             try { tun.close(); } catch (Exception ignored) { }
             tun = null;
         }
-        if (was) Core.log("■ VPN off");
+        if (was) Core.log("x VPN off");
         stopForeground(STOP_FOREGROUND_REMOVE);
         stopSelf();
     }

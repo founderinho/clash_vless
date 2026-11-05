@@ -171,7 +171,7 @@ public class MainActivity extends Activity {
         if (tab != LOG) Core.setListener(null);
         JSONObject st = Ctl.state;
         if (tab != LOG && (!Ctl.connected || st == null)) {
-            body.addView(card("Connecting", "Starting the local engine and reading its state…"));
+            body.addView(card("Connecting", "Starting the local engine and reading its state..."));
             return;
         }
         if (tab == STATUS) renderStatus(st, body);
@@ -195,8 +195,8 @@ public class MainActivity extends Activity {
         String main = s.optString("Main");
         if (main.isEmpty()) main = "main";
         if (tier == 0) return s.optString("Err", "Waiting for a route");
-        if (tier == 1) return "T1 direct → " + main + " · " + ms + " ms";
-        return "T" + tier + " " + s.optString("Entry") + " → " + main + " · " + ms + " ms";
+        if (tier == 1) return "T1 direct -> " + main + " | " + ms + " ms";
+        return "T" + tier + " " + s.optString("Entry") + " -> " + main + " | " + ms + " ms";
     }
 
     private void renderStatus(JSONObject st, LinearLayout target) {
@@ -207,9 +207,9 @@ public class MainActivity extends Activity {
         hero.addView(text(s == null ? "" : line(s), 14, online ? ACCENT : MUTED, false));
         hero.addView(spacer(10));
         LinearLayout metrics = new LinearLayout(this);
-        addMetric(metrics, "Latency", online ? s.optLong("Egress") / 1_000_000 + " ms" : "—");
+        addMetric(metrics, "Latency", online ? s.optLong("Egress") / 1_000_000 + " ms" : "-");
         addMetric(metrics, "Healthy nodes", okCount(s == null ? null : s.optJSONArray("Country")) + " / " + okCount(s == null ? null : s.optJSONArray("Bypass")));
-        addMetric(metrics, "Active tier", online ? "T" + s.optInt("Tier") : "—");
+        addMetric(metrics, "Active tier", online ? "T" + s.optInt("Tier") : "-");
         hero.addView(metrics);
         target.addView(hero);
         if (s != null && !s.optString("TunErr").isEmpty()) target.addView(card("VPN error", s.optString("TunErr")));
@@ -227,8 +227,8 @@ public class MainActivity extends Activity {
         target.addView(endpoints);
         if (s != null) {
             LinearLayout pools = card("Entry pools", "Live health and tier selection");
-            pools.addView(text("Country · T2     " + okCount(s.optJSONArray("Country")) + " online", 14, TEXT, false));
-            pools.addView(text("Bypass · T3       " + okCount(s.optJSONArray("Bypass")) + " online", 14, TEXT, false));
+            pools.addView(text("Country | T2     " + okCount(s.optJSONArray("Country")) + " online", 14, TEXT, false));
+            pools.addView(text("Bypass | T3       " + okCount(s.optJSONArray("Bypass")) + " online", 14, TEXT, false));
             if (!s.optString("Note").isEmpty()) pools.addView(text(s.optString("Note"), 12, MUTED, false));
             target.addView(pools);
         }
@@ -256,7 +256,7 @@ public class MainActivity extends Activity {
             String fetched = sb.optString("last_fetch");
             if (fetched.length() > 16) fetched = fetched.substring(0, 16).replace('T', ' ');
             boolean active = st.optBoolean("auto_select") || st.optInt("active_sub") == idx;
-            LinearLayout item = card(sb.optString("name"), (nodes == null ? 0 : nodes.length()) + " nodes · " + fetched + (active ? " · Active" : ""));
+            LinearLayout item = card(sb.optString("name"), (nodes == null ? 0 : nodes.length()) + " nodes | " + fetched + (active ? " | Active" : ""));
             item.addView(row(btn("Use only this", false, () -> {
                 Ctl.patch("active_sub", idx);
                 Ctl.patch("auto_select", false);
@@ -265,11 +265,11 @@ public class MainActivity extends Activity {
         }
         JSONObject s = Ctl.status;
         String pin = st.optString("pin_entry");
-        LinearLayout nodes = card("Entry nodes", pin.isEmpty() ? "Automatic selection · tap Pin to force an entry" : "Pinned: " + pin);
+        LinearLayout nodes = card("Entry nodes", pin.isEmpty() ? "Automatic selection | tap Pin to force an entry" : "Pinned: " + pin);
         if (!pin.isEmpty()) nodes.addView(btn("Restore automatic selection", false, () -> Ctl.patch("pin_entry", "")));
         if (s != null) {
-            pool(nodes, "Country · T2", s.optJSONArray("Country"), pin);
-            pool(nodes, "Bypass · T3", s.optJSONArray("Bypass"), pin);
+            pool(nodes, "Country | T2", s.optJSONArray("Country"), pin);
+            pool(nodes, "Bypass | T3", s.optJSONArray("Bypass"), pin);
         }
         body.addView(nodes);
     }
@@ -280,10 +280,10 @@ public class MainActivity extends Activity {
             JSONObject p = probes.optJSONObject(i);
             String name = p.optString("Name");
             StringBuilder stats = new StringBuilder(p.optString("Server"));
-            if (p.optBoolean("OK")) stats.append(" · ").append(p.optLong("Latency") / 1_000_000).append(" ms");
-            else stats.append(" · Offline");
-            if (p.optDouble("Speed") > 0) stats.append(" · ").append(Math.round(p.optDouble("Speed"))).append(" Mbps");
-            if (p.optInt("Samples") > 0) stats.append(" · ").append(Math.round(p.optDouble("Flakiness"))).append("% flakiness");
+            if (p.optBoolean("OK")) stats.append(" | ").append(p.optLong("Latency") / 1_000_000).append(" ms");
+            else stats.append(" | Offline");
+            if (p.optDouble("Speed") > 0) stats.append(" | ").append(Math.round(p.optDouble("Speed"))).append(" Mbps");
+            if (p.optInt("Samples") > 0) stats.append(" | ").append(Math.round(p.optDouble("Flakiness"))).append("% flakiness");
             parent.addView(row(text(name + "\n" + stats, 12, TEXT, false),
                     btn(name.equals(pin) ? "Unpin" : "Pin", false, () -> Ctl.patch("pin_entry", name.equals(pin) ? "" : name))));
         }
@@ -302,9 +302,9 @@ public class MainActivity extends Activity {
             JSONArray liveSlots = s == null ? null : s.optJSONArray("Slots");
             for (int k = 0; liveSlots != null && k < liveSlots.length(); k++) {
                 JSONObject current = liveSlots.optJSONObject(k);
-                if (name.equals(current.optString("Name"))) live = " · " + line(current);
+                if (name.equals(current.optString("Name"))) live = " | " + line(current);
             }
-            LinearLayout slot = card(name, "socks5://" + listenHost(st) + ":" + sl.optInt("port") + live + (name.equals(tunSlot) ? " · VPN slot" : ""));
+            LinearLayout slot = card(name, "socks5://" + listenHost(st) + ":" + sl.optInt("port") + live + (name.equals(tunSlot) ? " | VPN slot" : ""));
             slot.addView(toggle("Slot enabled", sl.optBoolean("enabled"), on -> editSlot(st, si, sl, "enabled", on)));
             slot.addView(row(btn("Edit port", false, () -> editPort(st, si)),
                     btn("Use for VPN", false, () -> Ctl.patch("tun_slot", name)),
@@ -313,9 +313,9 @@ public class MainActivity extends Activity {
             for (int m = 0; mains != null && m < mains.length(); m++) {
                 final int mi = m;
                 JSONObject mn = mains.optJSONObject(m);
-                slot.addView(text(mn.optString("name") + "\n" + mainHost(mn.optString("url")) + " · " + proto(mn.optString("url")), 14, TEXT, true));
+                slot.addView(text(mn.optString("name") + "\n" + mainHost(mn.optString("url")) + " | " + proto(mn.optString("url")), 14, TEXT, true));
                 slot.addView(toggle("Exit enabled", mn.optBoolean("enabled"), on -> editMain(st, si, mi, "enabled", on)));
-                slot.addView(toggle("Allow direct · T1", mn.optBoolean("allow_no_hop"), on -> editMain(st, si, mi, "allow_no_hop", on)));
+                slot.addView(toggle("Allow direct | T1", mn.optBoolean("allow_no_hop"), on -> editMain(st, si, mi, "allow_no_hop", on)));
                 slot.addView(btn("Delete final exit", false, () -> confirm("Delete " + mn.optString("name") + "?", () -> editMain(st, si, mi, "delete", true))));
             }
             slot.addView(btn("Add final exit", false, () -> askMain(st, si)));
@@ -325,7 +325,7 @@ public class MainActivity extends Activity {
     }
 
     private void renderLog() {
-        LinearLayout logs = card("Daemon events", "Live engine activity · newest at the bottom");
+        LinearLayout logs = card("Daemon events", "Live engine activity | newest at the bottom");
         logs.addView(btn("Clear view", false, () -> { Core.clearLog(); logView.setText(""); }));
         logView = text("", 12, MUTED, false);
         logView.setTypeface(Typeface.MONOSPACE);
@@ -379,18 +379,18 @@ public class MainActivity extends Activity {
 
         if (configSection == 0) {
             LinearLayout failover = card("Automatic failover", "Route selection, health checks, and recovery");
-            intRow(failover, st, "Probe interval · seconds", "interval_s", 12, 2, 600);
-            intRow(failover, st, "Egress timeout · seconds", "timeout_s", 6, 1, 60);
+            intRow(failover, st, "Probe interval | seconds", "interval_s", 12, 2, 600);
+            intRow(failover, st, "Egress timeout | seconds", "timeout_s", 6, 1, 60);
             intRow(failover, st, "Recovery threshold", "up_threshold", 3, 1, 10);
             intRow(failover, st, "Failure threshold", "down_threshold", 2, 1, 10);
-            String[] tiers = {"Automatic", "T1 · Direct", "T2 · Country", "T3 · Bypass"};
+            String[] tiers = {"Automatic", "T1 | Direct", "T2 | Country", "T3 | Bypass"};
             chooseRow(failover, "Pin tier", tiers[st.optInt("pin_tier")], "Pin tier", tiers, which -> Ctl.patch("pin_tier", which));
-            boolRow(failover, st, "Force a hop · skip T1", "force_hop", false);
+            boolRow(failover, st, "Force a hop | skip T1", "force_hop", false);
             body.addView(failover);
 
             LinearLayout network = card("Local listeners", "Restart the daemon to apply these changes");
             intRow(network, st, "Listen port", "listen_port", 2084, 1024, 65535);
-            intRow(network, st, "First-hop port · 0 = auto", "entry_port", 0, 0, 65535);
+            intRow(network, st, "First-hop port | 0 = auto", "entry_port", 0, 0, 65535);
             boolean lan = !"127.0.0.1".equals(st.optString("listen_addr"));
             actionRow(network, "Allow LAN connections", lan ? "0.0.0.0" : "127.0.0.1", () -> Ctl.patch("listen_addr", lan ? "127.0.0.1" : "0.0.0.0"));
             String[] levels = {"none", "error", "warning", "info", "debug"};
@@ -398,11 +398,11 @@ public class MainActivity extends Activity {
             chooseRow(network, "Xray log level", level, "Xray log level", levels, which -> Ctl.patch("log_level", levels[which]));
             body.addView(network);
         } else if (configSection == 1) {
-            LinearLayout tun = card("System-wide VPN", "Static routed DNS · applied when the VPN reconnects");
+            LinearLayout tun = card("System-wide VPN", "Static routed DNS | applied when the VPN reconnects");
             textRow(tun, st, "Static DNS resolver", "tun_static_dns", "8.8.8.8");
             boolRow(tun, st, "Answer ping locally", "tun_no_icmp", true);
             textRow(tun, st, "TUN interface address", "tun_addr", "198.18.0.1/30");
-            intRow(tun, st, "TUN MTU · 0 = default", "tun_mtu", 0, 0, 9000);
+            intRow(tun, st, "TUN MTU | 0 = default", "tun_mtu", 0, 0, 9000);
             body.addView(tun);
         } else if (configSection == 2) {
             renderMain(st);
@@ -411,7 +411,7 @@ public class MainActivity extends Activity {
         } else if (configSection == 4) {
             LinearLayout updates = card("Subscription updates", "Background refresh and optional fetch proxy");
             boolRow(updates, st, "Automatic refresh", "no_auto_fetch", true);
-            intRow(updates, st, "Refresh interval · hours", "fetch_interval_h", 24, 1, 168);
+            intRow(updates, st, "Refresh interval | hours", "fetch_interval_h", 24, 1, 168);
             boolRow(updates, st, "Use fetch proxy", "use_fetch_proxy", false);
             textRow(updates, st, "Fetch proxy", "fetch_proxy", "socks5://127.0.0.1:2084");
             body.addView(updates);
@@ -420,7 +420,7 @@ public class MainActivity extends Activity {
             JSONObject device = st.optJSONObject("device");
             String hwid = device == null ? "" : device.optString("hwid");
             actionRow(identity, "Hardware ID", hwid, () -> ask("Hardware ID", hwid, InputType.TYPE_CLASS_TEXT, value -> {
-                if (!value.matches("[a-zA-Z0-9=-]{10,64}")) { toast("HWID must be 10–64 letters, digits, = or -"); return; }
+                if (!value.matches("[a-zA-Z0-9=-]{10,64}")) { toast("HWID must be 10-64 letters, digits, = or -"); return; }
                 try { Ctl.patch("device", new JSONObject(device.toString()).put("hwid", value)); } catch (Exception e) { failed(e); }
             }));
             if (device != null) {
@@ -776,7 +776,7 @@ public class MainActivity extends Activity {
         android.net.Uri uri = android.net.Uri.parse(value);
         String flow = uri.getQueryParameter("flow"), security = uri.getQueryParameter("security"), network = uri.getQueryParameter("type");
         String tag = flow != null && flow.contains("xtls-rprx-vision") ? "vision" : security == null || security.isEmpty() || security.equals("none") ? "plain" : security;
-        return network == null || network.isEmpty() || network.equals("tcp") ? tag : tag + " · " + network;
+        return network == null || network.isEmpty() || network.equals("tcp") ? tag : tag + " | " + network;
     }
 
     private static String mainName(String value) {
@@ -795,8 +795,8 @@ public class MainActivity extends Activity {
     }
 
     private void fetching(String what) {
-        Core.log("→ " + what + " …");
-        toast("Fetching… results appear in Activity");
+        Core.log("-> " + what + " ...");
+        toast("Fetching... results appear in Activity");
     }
 
     private void failed(Exception error) {

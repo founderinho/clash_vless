@@ -62,7 +62,7 @@ final class Core {
         return dir(c) + "/control.sock";
     }
 
-    /** files/cv: CLI as the app's user — `adb shell run-as com.clashvless sh files/cv status`. */
+    /** files/cv: CLI as the app's user - `adb shell run-as com.clashvless sh files/cv status`. */
     static void writeCli(Context c, String dns) {
         String sh = "#!/system/bin/sh\nexport HOME=" + dir(c) + " CLASHVLESS_DNS=" + dns + " SSL_CERT_DIR=" + CERT_DIRS
                 + "\nexec " + bin(c) + " --config " + dir(c) + " \"$@\"\n";
@@ -93,7 +93,7 @@ final class Core {
         p.getOutputStream().close();
         daemon = p;
         daemonVpn = tunSock != null;
-        log(daemonVpn ? "▶ daemon (VPN)" : "▶ daemon (idle — VPN off)");
+        log(daemonVpn ? "> daemon (VPN)" : "> daemon (idle - VPN off)");
         new Thread(() -> {
             int code = -1;
             try {
@@ -106,7 +106,7 @@ final class Core {
                 daemon = null;
                 wasVpn = daemonVpn;
             }
-            log("■ daemon exited (" + code + ")");
+            log("x daemon exited (" + code + ")");
             if (wasVpn && VpnSvc.instance != null) VpnSvc.instance.shutdown();
         }).start();
     }
@@ -115,7 +115,7 @@ final class Core {
         Process p = daemon;
         daemon = null;
         if (p == null) return;
-        p.destroy(); // SIGTERM on API 26+ → clean teardown; older Androids SIGKILL
+        p.destroy(); // SIGTERM on API 26+ -> clean teardown; older Androids SIGKILL
         try {
             if (Build.VERSION.SDK_INT < 26) p.waitFor();
             else if (!p.waitFor(5, TimeUnit.SECONDS)) p.destroyForcibly();

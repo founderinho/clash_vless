@@ -86,7 +86,7 @@ final class Ctl {
             out.flush();
             return true;
         } catch (Exception e) {
-            Core.log("control: " + cmd.optString("cmd") + " dropped — " + e.getMessage());
+            Core.log("control: " + cmd.optString("cmd") + " dropped - " + e.getMessage());
             return false;
         }
     }
@@ -101,7 +101,7 @@ final class Ctl {
         }
     }
 
-    /** Top-level state field replace — what the daemon's "patch" applies. */
+    /** Top-level state field replace - what the daemon's "patch" applies. */
     static boolean patch(String key, Object value) {
         try {
             return cmd("patch", "patch", new JSONObject().put(key, value));
