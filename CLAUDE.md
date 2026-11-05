@@ -89,8 +89,8 @@ or a **system-wide TUN** — with automatic tiered failover.
   `LocalSocket` → `control.sock`, JSON lines; `state`/`status` events in, `patch`/`addsub`/`rmsub`/`refetch`/`kick`
   out), so every edit applies **live** to the running daemon, VPN up or not. The footer has **Settings**,
   **Overview**, and **Log**. All three are page switches; Overview contains connection metrics, route,
-  endpoints, and pools. A native switch in the header controls the VPN and displays
-  Disconnected/Connecting/Connected. Settings uses a section selector for network, VPN, routes, providers/nodes,
+  endpoints, and pools. An enlarged native switch in the header controls the VPN and displays
+  Disconnected/Connecting/Connected in a fixed-width, single-line label that cannot clip the final letters. Settings uses a section selector for network, VPN, routes, providers/nodes,
   updates, and device identity, retaining all former tab controls (including HWID and slot/main management).
   `VpnSvc` publishes a branded live notification with the selected route/latency and a Disconnect action.
   `VpnTileService` adds a quick-settings tile that starts/stops the VPN directly after Android's one-time VPN

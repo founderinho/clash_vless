@@ -83,8 +83,11 @@ public class MainActivity extends Activity {
         LinearLayout connection = new LinearLayout(this);
         connection.setOrientation(LinearLayout.VERTICAL);
         connection.setGravity(Gravity.CENTER_HORIZONTAL);
-        connectionLabel = text("Disconnected", 11, MUTED, true);
-        connection.addView(connectionLabel);
+        connection.setMinimumWidth(dp(88));
+        connectionLabel = text("Disconnected", 12, MUTED, true);
+        connectionLabel.setSingleLine(true);
+        connectionLabel.setGravity(Gravity.CENTER);
+        connection.addView(connectionLabel, new LinearLayout.LayoutParams(dp(88), -2));
         vpnSwitch = new Switch(this);
         vpnSwitch.setShowText(false);
         vpnSwitch.setThumbTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{BG, MUTED}));
@@ -92,7 +95,7 @@ public class MainActivity extends Activity {
         vpnSwitch.setOnCheckedChangeListener((view, on) -> {
             if (!switchUpdating) toggleVpn();
         });
-        connection.addView(vpnSwitch, new LinearLayout.LayoutParams(dp(58), dp(34)));
+        connection.addView(vpnSwitch, new LinearLayout.LayoutParams(dp(78), dp(44)));
         top.addView(connection);
         root.addView(top);
 
