@@ -338,6 +338,14 @@ public class MainActivity extends Activity {
 
     private void renderConfig(JSONObject st) {
         String[] names = {"Network", "VPN", "Exit routes", "Providers & nodes", "Updates", "Device"};
+        String[] descriptions = {
+                "Listeners, health checks, and failover",
+                "System-wide tunnel and interface",
+                "Failover slots and final VLESS exits",
+                "Subscriptions and entry-node selection",
+                "Background refresh and fetch proxy",
+                "Hardware ID and panel identity"
+        };
         LinearLayout sectionGroup = new LinearLayout(this);
         sectionGroup.setOrientation(LinearLayout.VERTICAL);
         sectionGroup.setPadding(dp(14), dp(10), dp(14), dp(12));
@@ -346,12 +354,54 @@ public class MainActivity extends Activity {
         sectionGroup.setBackground(groupBackground);
         sectionGroup.addView(text("SETTINGS TYPE", 11, ACCENT, true));
         sectionGroup.addView(text("Choose a category", 11, MUTED, false));
-        Button currentSection = btn(names[configSection] + "  >", false, () -> showConfigSections(names));
+        Button currentSection = btn(names[configSection], false, () -> { });
         currentSection.setTextSize(14);
         currentSection.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        currentSection.setPadding(dp(11), 0, dp(48), 0);
+        FrameLayout sectionSelector = new FrameLayout(this);
+        sectionSelector.addView(currentSection, new FrameLayout.LayoutParams(-1, -1));
+        ImageView sectionIndicator = new ImageView(this);
+        sectionIndicator.setImageResource(R.drawable.clashvless_expand);
+        sectionIndicator.setElevation(dp(4));
+        sectionIndicator.setContentDescription("Expand settings types");
+        FrameLayout.LayoutParams indicatorParams = new FrameLayout.LayoutParams(dp(24), dp(24));
+        indicatorParams.gravity = Gravity.END | Gravity.CENTER_VERTICAL;
+        indicatorParams.setMargins(0, 0, dp(14), 0);
+        sectionSelector.addView(sectionIndicator, indicatorParams);
         LinearLayout.LayoutParams currentParams = new LinearLayout.LayoutParams(-1, dp(48));
         currentParams.setMargins(0, dp(8), 0, 0);
-        sectionGroup.addView(currentSection, currentParams);
+        sectionGroup.addView(sectionSelector, currentParams);
+        LinearLayout sectionList = new LinearLayout(this);
+        sectionList.setOrientation(LinearLayout.VERTICAL);
+        sectionList.setVisibility(View.GONE);
+        for (int i = 0; i < names.length; i++) {
+            final int selected = i;
+            boolean active = i == configSection;
+            LinearLayout option = new LinearLayout(this);
+            option.setOrientation(LinearLayout.HORIZONTAL);
+            option.setGravity(Gravity.CENTER_VERTICAL);
+            option.setPadding(dp(12), dp(6), dp(12), dp(6));
+            option.setMinimumHeight(dp(54));
+            GradientDrawable optionBackground = round(active ? Color.rgb(27, 37, 44) : Color.TRANSPARENT, 8);
+            option.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3368d5bd), optionBackground, round(Color.WHITE, 8)));
+            LinearLayout labels = new LinearLayout(this);
+            labels.setOrientation(LinearLayout.VERTICAL);
+            labels.addView(text(names[i], 14, active ? ACCENT : TEXT, true));
+            labels.addView(text(descriptions[i], 11, MUTED, false));
+            option.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+            if (active) option.addView(text("CURRENT", 10, ACCENT, true));
+            option.setOnClickListener(view -> {
+                configSection = selected;
+                render();
+            });
+            LinearLayout.LayoutParams optionParams = new LinearLayout.LayoutParams(-1, -2);
+            optionParams.setMargins(0, dp(2), 0, dp(2));
+            sectionList.addView(option, optionParams);
+        }
+        LinearLayout.LayoutParams listParams = new LinearLayout.LayoutParams(-1, -2);
+        listParams.setMargins(0, dp(4), 0, 0);
+        sectionGroup.addView(sectionList, listParams);
+        currentSection.setOnClickListener(view -> toggleConfigSections(sectionList, sectionIndicator));
         LinearLayout.LayoutParams groupParams = new LinearLayout.LayoutParams(-1, -2);
         groupParams.setMargins(0, 0, 0, dp(10));
         body.addView(sectionGroup, groupParams);
@@ -411,69 +461,52 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void showConfigSections(String[] names) {
-        String[] descriptions = {
-                "Listeners, health checks, and failover",
-                "System-wide tunnel and interface",
-                "Failover slots and final VLESS exits",
-                "Subscriptions and entry-node selection",
-                "Background refresh and fetch proxy",
-                "Hardware ID and panel identity"
-        };
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(16), dp(8), dp(16), dp(20));
-        View handle = new View(this);
-        handle.setBackground(round(Color.rgb(67, 79, 92), 2));
-        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(36), dp(4));
-        handleParams.gravity = Gravity.CENTER_HORIZONTAL;
-        handleParams.setMargins(0, 0, 0, dp(10));
-        list.addView(handle, handleParams);
-        list.addView(text("Settings type", 20, TEXT, true));
-        list.addView(text("Choose what you want to configure", 12, MUTED, false));
-        list.addView(spacer(10));
-        AlertDialog dialog = new AlertDialog.Builder(this).setView(list).create();
-        for (int i = 0; i < names.length; i++) {
-            final int selected = i;
-            boolean active = i == configSection;
-            LinearLayout option = new LinearLayout(this);
-            option.setOrientation(LinearLayout.HORIZONTAL);
-            option.setGravity(Gravity.CENTER_VERTICAL);
-            option.setPadding(dp(14), dp(8), dp(14), dp(8));
-            option.setMinimumHeight(dp(58));
-            GradientDrawable optionBackground = round(active ? Color.rgb(27, 37, 44) : Color.TRANSPARENT, 8);
-            option.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3368d5bd), optionBackground, round(Color.WHITE, 8)));
-            LinearLayout labels = new LinearLayout(this);
-            labels.setOrientation(LinearLayout.VERTICAL);
-            labels.addView(text(names[i], 14, active ? ACCENT : TEXT, true));
-            labels.addView(text(descriptions[i], 11, MUTED, false));
-            option.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
-            if (active) option.addView(text("CURRENT", 10, ACCENT, true));
-            option.setOnClickListener(view -> {
-                dialog.dismiss();
-                configSection = selected;
-                render();
-            });
-            LinearLayout.LayoutParams optionParams = new LinearLayout.LayoutParams(-1, -2);
-            optionParams.setMargins(0, dp(2), 0, dp(2));
-            list.addView(option, optionParams);
+    private void toggleConfigSections(LinearLayout list, ImageView indicator) {
+        Object running = list.getTag();
+        if (running instanceof android.animation.ValueAnimator) ((android.animation.ValueAnimator) running).cancel();
+        boolean opening = list.getVisibility() != View.VISIBLE;
+        indicator.animate().cancel();
+        indicator.animate().rotation(opening ? 180 : 0).setDuration(220).start();
+        indicator.setContentDescription(opening ? "Collapse settings types" : "Expand settings types");
+        int start = list.getHeight();
+        int target = 0;
+        if (opening) {
+            View parent = (View) list.getParent();
+            int width = parent.getWidth() - parent.getPaddingLeft() - parent.getPaddingRight();
+            list.measure(View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED);
+            target = list.getMeasuredHeight();
+            start = 0;
+            list.setVisibility(View.VISIBLE);
         }
-        dialog.show();
-        android.view.Window window = dialog.getWindow();
-        if (window != null) {
-            GradientDrawable sheetBackground = round(CARD, 0);
-            sheetBackground.setCornerRadii(new float[]{dp(18), dp(18), dp(18), dp(18), 0, 0, 0, 0});
-            window.setBackgroundDrawable(sheetBackground);
-            window.setLayout(-1, -2);
-            window.setGravity(Gravity.BOTTOM);
-            View sheet = window.getDecorView();
-            sheet.post(() -> {
-                sheet.setTranslationY(sheet.getHeight());
-                sheet.animate().translationY(0).setDuration(240)
-                        .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
-            });
-        }
-    }
+        android.view.ViewGroup.LayoutParams initial = list.getLayoutParams();
+        initial.height = start;
+        list.setLayoutParams(initial);
+        android.animation.ValueAnimator animator = android.animation.ValueAnimator.ofInt(start, target);
+        animator.setDuration(220);
+        animator.setInterpolator(new android.view.animation.DecelerateInterpolator());
+        int startHeight = start;
+        int range = target - startHeight;
+        animator.addUpdateListener(animation -> {
+            int height = (int) animation.getAnimatedValue();
+            android.view.ViewGroup.LayoutParams params = list.getLayoutParams();
+            params.height = height;
+            list.setLayoutParams(params);
+            float progress = range == 0 ? 1 : (float) (height - startHeight) / range;
+            list.setAlpha(opening ? progress : 1 - progress);
+        });
+        animator.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                if (!opening) list.setVisibility(View.GONE);
+                android.view.ViewGroup.LayoutParams params = list.getLayoutParams();
+                params.height = -2;
+                list.setLayoutParams(params);
+                list.setAlpha(1);
+                list.setTag(null);
+            }
+        });
+        list.setTag(animator);
+        animator.start();
     }
 
     private void toggleVpn() {
