@@ -3,12 +3,14 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	gvisoripv4 "gvisor.dev/gvisor/pkg/tcpip/network/ipv4" // TUN ICMP-echo toggle (vendored gVisor patch)
@@ -25,18 +27,19 @@ type Probe struct {
 	Whitelist bool
 	Latency   time.Duration
 	OK        bool
-	Speed     float64 // Mbps from the last speedtest (0 = not yet tested)
+	Speed     float64 // mean Mbps over the speed window (see SpeedN for whether it's measured)
+	SpeedN    int     // speed samples behind Speed (0 = not yet tested; >0 with Speed 0 = failed in chain)
 	Flakiness float64 // % of the last hour's reachability probes that FAILED (0 = rock-solid)
 	Samples   int     // probes behind Flakiness in the window (0 = not enough evidence yet)
 }
 
 // SlotStatus is the live failover state of one slot (its own port + best main).
 type SlotStatus struct {
-	Name   string
-	Port   int
-	Tier   int    // 1/2/3 = active tier; 0 = down
-	Entry  string // entry node name ("" for T1 direct)
-	Main   string // active final-exit main name
+	Name    string
+	Port    int
+	Tier    int    // 1/2/3 = active tier; 0 = down
+	Entry   string // entry node name ("" for T1 direct)
+	Main    string // active final-exit main name
 	Egress  time.Duration
 	Err     string
 	Note    string
@@ -61,7 +64,17 @@ type Status struct {
 	Slots     []SlotStatus
 	Country   []Probe
 	Bypass    []Probe
+	Sweep     Sweep // live speedtest sweep progress (zero = idle)
 	UpdatedAt time.Time
+}
+
+// Sweep is the progress of a running speedtest sweep, for the UI's spinner.
+type Sweep struct {
+	Node  string // node under test now ("" = no sweep running)
+	Done  int    // nodes finished so far
+	Total int    // nodes in this sweep
+	Via   string // main each node is chained to ("" = node-direct)
+	Ref   string // host of the speed reference in use
 }
 
 // Supervisor keeps the single local port served by the best available tier and
@@ -84,8 +97,10 @@ type Supervisor struct {
 	rankedCountry []*store.Node
 	rankedBypass  []*store.Node
 
-	speedMu sync.Mutex
-	speeds  map[string][]speedSample // rolling 1h throughput samples by node name (rare speed loop)
+	speedMu     sync.Mutex
+	speeds      map[string][]speedSample // rolling 1h throughput samples by node name (rare speed loop)
+	speedsReady bool                     // a sweep has completed with real measurements (gates the one-time upgrade)
+	speedOff    atomic.Bool              // mirror of State.NoSpeedTest (read under speedMu, so it can't take mu)
 
 	flakeMu sync.Mutex
 	flakes  map[string][]flakeSample // rolling 1h reachability history by node name (the stability signal)
@@ -423,8 +438,9 @@ func (s *Supervisor) poolLoop(ctx context.Context) {
 	}
 }
 
-// speedLoop runs a rare, automatic throughput test of every node and caches the
-// result (Mbps by name) for display. Fully decoupled from failover selection.
+// speedLoop runs a rare, automatic throughput test of every reachable node. The
+// mean of those samples ranks the entry pools (see rankPool), so it decides which
+// hop a chained tier picks.
 func (s *Supervisor) speedLoop(ctx context.Context) {
 	select {
 	case <-ctx.Done():
@@ -444,56 +460,178 @@ func (s *Supervisor) speedLoop(ctx context.Context) {
 	}
 }
 
+// speedRefMain is the hop main every entry is speedtested in front of: the first
+// hop-able (non-Vision) main of the TUN slot (else the first enabled slot). Nodes
+// are only ever used as ENTRIES chained to such a main, and a node that is fast as
+// its own exit can crawl in front of the main (its path to the main's server gets
+// throttled), so the chain — not the node alone — is what must be measured. nil
+// (no hop-able main) falls back to a node-direct test.
+func (s *Supervisor) speedRefMain() (namedOB, bool) {
+	s.mu.Lock()
+	sl := s.st.SlotByName(s.st.TunSlotName())
+	var mains []store.Main
+	if sl != nil {
+		mains = sl.HopMains()
+	}
+	s.mu.Unlock()
+	if obs := namedOutbounds(mains); len(obs) > 0 {
+		return obs[0], true
+	}
+	return namedOB{}, false
+}
+
 // runSpeeds speedtests only the nodes that currently *ping* — the reachable set
 // the pool probe already found (rankedCountry ∪ rankedBypass). Testing a node
 // that can't even egress a 204 just wastes a throwaway xray on a guaranteed miss.
+// Each node is tested as hop → speedRefMain (the real chain). Tests run one at a
+// time: they share the uplink and, chained, the main's server too, so parallel
+// tests would split the bandwidth and skew the ranking. A reachable node whose
+// transfer fails scores 0 (it can't carry traffic) rather than staying
+// "unmeasured" and ranking mid-pack by ping. A refused reference (HTTP 429 etc.)
+// says nothing about the node: the sweep moves to the next speedURLs entry and
+// retests the same node, and only aborts (recording nothing more) once every
+// reference refuses. Any other failure is only blamed on the node once the
+// current reference is PROVEN (some node measured through it this sweep) — before
+// that, a broken reference (e.g. one that rejects our client) would otherwise
+// score every node 0, so the sweep rotates references instead; a node that fails
+// on every reference scores 0.
 func (s *Supervisor) runSpeeds(ctx context.Context) {
 	s.mu.Lock()
 	nodes := append(append([]*store.Node(nil), s.rankedCountry...), s.rankedBypass...)
+	s.speedOff.Store(s.st.NoSpeedTest)
 	s.mu.Unlock()
-	if len(nodes) == 0 {
+	if len(nodes) == 0 || s.speedOff.Load() {
 		return
 	}
-	s.logf("⚡ speedtest sweep (%d reachable)…", len(nodes))
-	sem := make(chan struct{}, speedConcurrency)
-	var wg sync.WaitGroup
-	for _, n := range nodes {
+	ref, chained := s.speedRefMain()
+	defer s.setSweep(Sweep{}) // idle again however the sweep ends
+	if chained {
+		s.logf("⚡ speedtest sweep (%d reachable, each → %s)…", len(nodes), ref.name)
+	} else {
+		s.logf("⚡ speedtest sweep (%d reachable, node-direct: no hop main)…", len(nodes))
+	}
+	ui := 0         // index into speedURLs; sticks for the rest of the sweep once moved
+	proven := false // a node has measured through speedURLs[ui] this sweep
+	measured := 0
+	for i, n := range nodes {
+		if ctx.Err() != nil {
+			return
+		}
+		if s.speedOff.Load() { // switched off mid-sweep
+			s.logf("⚡ speedtest switched off — sweep stopped")
+			return
+		}
 		if len(n.Outbound) == 0 {
 			continue
 		}
-		wg.Add(1)
-		go func(n *store.Node) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			if mbps, ok := s.speedProbe(ctx, n.Outbound); ok {
-				s.recordSpeed(n.Name, mbps)
-				s.logf("⚡ %s  %.0f Mbps", n.Name, mbps)
+		mainOB, entryOB := n.Outbound, json.RawMessage(nil)
+		if chained {
+			mainOB, entryOB = ref.ob, n.Outbound
+		}
+		var mbps float64
+		var err error
+		allRefused := true
+		for tried := 1; ; tried++ {
+			s.setSweep(Sweep{Node: n.Name, Done: i, Total: len(nodes), Via: ref.name, Ref: urlHost(speedURLs[ui])})
+			mbps, err = s.speedProbe(ctx, mainOB, entryOB, speedURLs[ui])
+			refused := errors.Is(err, ErrSpeedRefused)
+			allRefused = allRefused && refused
+			if err == nil {
+				proven = true
+				break
 			}
-		}(n)
+			if errors.Is(err, errSpeedSetup) || ctx.Err() != nil || (!refused && proven) || tried >= len(speedURLs) {
+				break // setup/cancel, a real node failure on a proven reference, or every reference tried
+			}
+			ui, proven = (ui+1)%len(speedURLs), false
+			s.logf("⚡ %s via %s: %v — switching speed reference to %s", n.Name, urlHost(speedURLs[(ui+len(speedURLs)-1)%len(speedURLs)]), err, urlHost(speedURLs[ui]))
+		}
+		switch {
+		case errors.Is(err, errSpeedSetup) || ctx.Err() != nil:
+			continue // our side failed to stand the test up — not the node's fault
+		case err != nil && allRefused:
+			s.logf("⚡ sweep aborted at %s: every speed reference refused — keeping previous samples", n.Name)
+			return
+		case err != nil:
+			s.recordSpeed(n.Name, 0)
+			s.logf("⚡ %s  0 Mbps (%v)", n.Name, err)
+		default:
+			measured++
+			s.recordSpeed(n.Name, mbps)
+			s.logf("⚡ %s  %.0f Mbps", n.Name, mbps)
+		}
 	}
-	wg.Wait()
+	if measured > 0 {
+		s.speedMu.Lock()
+		s.speedsReady = true
+		s.speedMu.Unlock()
+		s.Kick() // let slots take the one-time best-speed upgrade now, not a cycle later
+	}
+	s.logf("⚡ sweep done: %d/%d measured", measured, len(nodes))
 }
 
-// speedProbe spins a throwaway node-direct xray and measures its throughput.
-func (s *Supervisor) speedProbe(ctx context.Context, ob json.RawMessage) (float64, bool) {
+// speedsSwept reports whether a sweep has finished with real measurements, so a
+// throughput ranking covers the pool rather than the first node or two.
+func (s *Supervisor) speedsSwept() bool {
+	s.speedMu.Lock()
+	defer s.speedMu.Unlock()
+	return s.speedsReady && !s.speedOff.Load()
+}
+
+// setSweep publishes sweep progress and refreshes every listed node's speed from
+// the samples so far, so the UI shows a node's new number the moment its test
+// ends instead of at the next pool refresh.
+func (s *Supervisor) setSweep(sw Sweep) {
+	s.mu.Lock()
+	s.status.Sweep = sw
+	s.status.Country = s.withSpeeds(s.status.Country)
+	s.status.Bypass = s.withSpeeds(s.status.Bypass)
+	s.mu.Unlock()
+	s.publish()
+}
+
+// withSpeeds returns a copy of pool with each node's speed re-read from the
+// samples (a copy: earlier snapshots handed to the UI share the old backing array).
+func (s *Supervisor) withSpeeds(pool []Probe) []Probe {
+	out := append([]Probe(nil), pool...)
+	for i := range out {
+		out[i].Speed, out[i].SpeedN = s.meanSpeed(out[i].Name)
+	}
+	return out
+}
+
+// errSpeedSetup marks a speed probe that never got to test the path (no free
+// port, bad config, xray didn't start).
+var errSpeedSetup = errors.New("speed probe setup failed")
+
+// urlHost is a speed reference's host, for logs and the UI.
+func urlHost(u string) string {
+	if p, err := url.Parse(u); err == nil && p.Host != "" {
+		return p.Host
+	}
+	return u
+}
+
+// speedProbe spins a throwaway xray (mainOB, dialed through entryOB when non-nil)
+// and measures its throughput downloading refURL.
+func (s *Supervisor) speedProbe(ctx context.Context, mainOB, entryOB json.RawMessage, refURL string) (float64, error) {
 	port, err := freePort()
 	if err != nil {
-		return 0, false
+		return 0, errSpeedSetup
 	}
-	cfg, err := xray.BuildConfig(port, ob, nil, 0, "none", "127.0.0.1")
+	cfg, err := xray.BuildConfig(port, mainOB, entryOB, 0, "none", "127.0.0.1")
 	if err != nil {
-		return 0, false
+		return 0, errSpeedSetup
 	}
 	inst, err := Start(cfg)
 	if err != nil {
-		return 0, false
+		return 0, errSpeedSetup
 	}
 	defer inst.Close()
 	if !waitPort(port, 1500*time.Millisecond) {
-		return 0, false
+		return 0, errSpeedSetup
 	}
-	return SpeedThroughSOCKS(ctx, port, speedBudget)
+	return SpeedThroughSOCKS(ctx, port, refURL, speedBudget)
 }
 
 type speedSample struct {
@@ -525,6 +663,9 @@ func (s *Supervisor) recordSpeed(name string, mbps float64) {
 func (s *Supervisor) meanSpeed(name string) (mbps float64, samples int) {
 	s.speedMu.Lock()
 	defer s.speedMu.Unlock()
+	if s.speedOff.Load() { // speedtest off: every node reads as unmeasured → ping ranking
+		return 0, 0
+	}
 	cut := time.Now().Add(-speedWindow)
 	var sum float64
 	var n int
@@ -611,9 +752,14 @@ func (r *slotRunner) cycle(ctx context.Context) {
 		// speedtest) swaps to the best-throughput entry in its tier the moment speed
 		// data lands — then it's sticky again (never chasing ping/speed jitter).
 		if !r.liveBySpeed && curTier >= 2 {
-			if _, n := r.sup.meanSpeed(curEntry); n > 0 { // this tier's speeds are in
+			if r.sup.speedsSwept() { // a full sweep is in — not just the first node or two
 				if best, ok := r.bestWorking(ctx, directOB, hopOB, curTier, curTier); ok {
-					if best.entry != nil && best.key != r.liveKey && r.apply(best) == nil {
+					var bestSpd float64
+					if best.entry != nil {
+						bestSpd, _ = r.sup.meanSpeed(best.entry.Name)
+					}
+					curSpd, _ := r.sup.meanSpeed(curEntry)
+					if best.entry != nil && best.key != r.liveKey && bestSpd > curSpd && r.apply(best) == nil {
 						r.liveBySpeed = true
 						spd, _ := r.sup.meanSpeed(best.entry.Name)
 						r.logf("⚡ upgraded to best-speed %s (%.0f Mbps)", best.entry.Name, spd)
@@ -937,10 +1083,9 @@ const (
 	poolProbeTimeout     = 8 * time.Second  // match the speed budget: "reachable" == "usable", not "fast"
 	poolRefreshInterval  = 20 * time.Second // background pool-health cadence
 
-	speedInterval    = 15 * time.Minute // rare auto-speedtest cadence
-	speedConcurrency = 4                // max simultaneous speedtests (heavy)
-	speedBudget      = 8 * time.Second  // per-node download window (past slow-start)
-	speedWindow      = time.Hour        // rolling window behind the mean throughput
+	speedInterval = 15 * time.Minute // rare auto-speedtest cadence
+	speedBudget   = 8 * time.Second  // per-node download window (past slow-start)
+	speedWindow   = time.Hour        // rolling window behind the mean throughput
 )
 
 // --- flakiness / stability ---------------------------------------------------
@@ -1018,6 +1163,9 @@ func (s *Supervisor) stabilityBucket(name string) int {
 // concurrently, records fastest-first ordering, and updates the dashboard. The
 // latency is honest — a raw TCP connect just measured reaching the node's edge.
 func (s *Supervisor) refreshPools(ctx context.Context) {
+	s.mu.Lock()
+	s.speedOff.Store(s.st.NoSpeedTest) // pick up a Config-tab toggle within one refresh
+	s.mu.Unlock()
 	sem := make(chan struct{}, poolProbeConcurrency)
 	var c, b []*store.Node
 	var wg sync.WaitGroup
@@ -1067,8 +1215,8 @@ func (s *Supervisor) rankPool(ctx context.Context, whitelist bool, sem chan stru
 	probes := make([]Probe, len(results))
 	for i, r := range results {
 		pct, ns := s.flakiness(r.n.Name)
-		spd, _ := s.meanSpeed(r.n.Name)
-		probes[i] = Probe{Name: r.n.Name, Server: r.n.Server, Whitelist: whitelist, Latency: r.lat, OK: r.ok, Speed: spd, Flakiness: pct, Samples: ns}
+		spd, sn := s.meanSpeed(r.n.Name)
+		probes[i] = Probe{Name: r.n.Name, Server: r.n.Server, Whitelist: whitelist, Latency: r.lat, OK: r.ok, Speed: spd, SpeedN: sn, Flakiness: pct, Samples: ns}
 	}
 	s.setPool(whitelist, probes)
 

@@ -29,6 +29,15 @@ type statusMsg engine.Status
 type logMsg string
 type stateMsg json.RawMessage
 type daemonGoneMsg struct{}
+type spinTickMsg struct{}
+
+// spinFrames animate the Subs row of the node a speed sweep is testing.
+var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// spinTick drives the spinner; it's only scheduled while a sweep runs.
+func spinTick() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return spinTickMsg{} })
+}
 
 const (
 	tabStatus = iota
@@ -80,6 +89,9 @@ type model struct {
 	wizErr     string
 
 	confirmExit bool // showing the "exit? y/n" prompt
+
+	spinFrame int  // current spinner frame while a speed sweep runs
+	spinning  bool // a spinTick is scheduled (one chain at a time)
 }
 
 // RunClient attaches the TUI to a running daemon over the control socket. It
@@ -116,6 +128,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.status = engine.Status(msg)
 		m.clearProgress()
+		if m.status.Sweep.Node != "" && !m.spinning {
+			m.spinning = true
+			return m, spinTick()
+		}
+	case spinTickMsg:
+		if m.status.Sweep.Node == "" {
+			m.spinning = false
+			return m, nil
+		}
+		m.spinFrame++
+		return m, spinTick()
 	case logMsg:
 		m.logs = append(m.logs, string(msg))
 		if len(m.logs) > 500 {
@@ -507,6 +530,7 @@ var cfgFields = []cfgField{
 	{"Log level", func(st *store.State) int { return logLevelIdx(st.Loglevel()) }, func(st *store.State, v int) { st.LogLevel = logLevels[clamp(v, 0, len(logLevels)-1)] }, 0, 4, logLevelLabel, "xray verbosity; restart daemon to apply"},
 	{"Use fetch proxy", func(st *store.State) int { return b2i(st.UseFetchProxy) }, func(st *store.State, v int) { st.UseFetchProxy = v != 0 }, 0, 1, onOff, "fetch subs via the proxy below"},
 	{"Auto-fetch subs", func(st *store.State) int { return b2i(st.AutoFetch()) }, func(st *store.State, v int) { st.NoAutoFetch = v == 0 }, 0, 1, onOff, "daemon periodically refetches subs so the node set never goes stale"},
+	{"Speedtest sweep", func(st *store.State) int { return b2i(st.SpeedTest()) }, func(st *store.State, v int) { st.NoSpeedTest = v == 0 }, 0, 1, onOff, "rank hops by measured hop→main speed; off = ignore speeds, rank by stability + ping"},
 	{"Auto-fetch every (h)", func(st *store.State) int { return eff(st.FetchIntervalH, 24) }, func(st *store.State, v int) { st.FetchIntervalH = v }, 1, 168, nil, "hours between auto-fetches"},
 }
 
@@ -652,6 +676,9 @@ func (m *model) statusView() string {
 	if s.Note != "" {
 		conn += "\n" + dimStyle.Render(s.Note)
 	}
+	if sw := m.sweepLabel(); sw != "" {
+		conn += "\n" + sw + dimStyle.Render("  (link busy)")
+	}
 	if s.TunErr != "" {
 		conn += "\n" + badStyle.Render(s.TunErr)
 	}
@@ -705,8 +732,12 @@ func (m *model) subsView() string {
 	b.WriteString(head + "\n")
 	t2pct, t2n := poolFlake(m.status.Country)
 	t3pct, t3n := poolFlake(m.status.Bypass)
+	tail := dimStyle.Render("   — leader = steadiest, then fastest")
+	if sw := m.sweepLabel(); sw != "" {
+		tail = "   " + sw
+	}
 	b.WriteString("  " + dimStyle.Render("flakiness 1h: ") + flakeLabel("T2", t2pct, t2n) + dimStyle.Render("  ") + flakeLabel("T3", t3pct, t3n) +
-		dimStyle.Render("   — leader = steadiest, then fastest") + "\n\n")
+		tail + "\n\n")
 
 	if len(m.st.Subs) == 0 {
 		b.WriteString(dimStyle.Render("  no subs yet — press ") + keyStyle.Render("a") + dimStyle.Render(" to add one"))
@@ -760,9 +791,17 @@ func (m *model) subsView() string {
 						flkStr = okStyle.Render(fs)
 					}
 				}
-				if p.Speed > 0 {
-					spdStr = dimStyle.Render(fmt.Sprintf("  %4.0f Mbps", p.Speed))
+				if p.SpeedN > 0 {
+					ss := fmt.Sprintf("  %4.0f Mbps", p.Speed)
+					if p.Speed < 1 { // measured, but the chain can't carry traffic
+						spdStr = badStyle.Render(ss)
+					} else {
+						spdStr = dimStyle.Render(ss)
+					}
 				}
+			}
+			if m.status.Sweep.Node == nd.Name {
+				spdStr = warnStyle.Render("  " + m.spinner() + " testing")
 			}
 			pinMark := "  "
 			if m.st.PinEntry == nd.Name {
@@ -780,6 +819,22 @@ func (m *model) subsView() string {
 		b.WriteString("\n" + sectionStyle.Render("add URL: ") + m.inputBuf + "▏")
 	}
 	return b.String()
+}
+
+// spinner is the current sweep spinner frame.
+func (m *model) spinner() string { return spinFrames[m.spinFrame%len(spinFrames)] }
+
+// sweepLabel renders a running speed sweep's progress ("" when idle).
+func (m *model) sweepLabel() string {
+	sw := m.status.Sweep
+	if sw.Node == "" {
+		return ""
+	}
+	via := "node-direct"
+	if sw.Via != "" {
+		via = "→ " + sw.Via
+	}
+	return warnStyle.Render(fmt.Sprintf("⚡ %s sweep %d/%d", m.spinner(), sw.Done+1, sw.Total)) + dimStyle.Render(" "+via+" · "+sw.Ref)
 }
 
 func (m *model) subStatus(sb *store.Subscription) string {

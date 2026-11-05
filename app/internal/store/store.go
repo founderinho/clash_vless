@@ -136,6 +136,10 @@ type State struct {
 	// set never goes stale (a stale sub = dead servers still probed, fresh ones missed).
 	NoAutoFetch    bool `json:"no_auto_fetch"`    // inverse so the zero value keeps auto-fetch ON
 	FetchIntervalH int  `json:"fetch_interval_h"` // hours between auto-fetches (0 = default 24)
+	// Speedtest sweep: ranks entries by measured hop→main throughput. Off = no
+	// sweeps and samples are ignored (ranking falls back to stability + ping) — the
+	// escape hatch if the sweep misbehaves (e.g. a reference scoring every hop 0).
+	NoSpeedTest bool `json:"no_speedtest"` // inverse so the zero value keeps speedtests ON
 
 	// TUN mode (system-wide capture; Linux + Windows). A separate persistent
 	// "bridge" xray instance (tun inbound → local SOCKS) owns the device, so
@@ -182,7 +186,7 @@ type State struct {
 const DefaultUA = "Happ/3.13.0"
 
 // Version is the app version, shown in the TUI header and `version` command.
-const Version = "0.26.0"
+const Version = "0.27.0"
 
 func Dir() (string, error) {
 	base, err := os.UserConfigDir()
@@ -414,6 +418,10 @@ func (s *State) TunICMP() bool { return !s.TunNoICMP }
 // AutoFetch reports whether the daemon periodically refetches subscriptions
 // (default true). Inverse of NoAutoFetch so the zero value enables it.
 func (s *State) AutoFetch() bool { return !s.NoAutoFetch }
+
+// SpeedTest reports whether the periodic speedtest sweep runs and its samples
+// rank entries (default true). Inverse of NoSpeedTest so the zero value enables it.
+func (s *State) SpeedTest() bool { return !s.NoSpeedTest }
 
 // AutoFetchInterval is the gap between automatic subscription refetches
 // (default 24h; config in whole hours, minimum 1h).

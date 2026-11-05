@@ -144,7 +144,21 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
     (`stabBucketPct`) so only a *clear* stability gap overrides throughput; under-sampled nodes
     (`< minStabSamples`) sit mid-pack (`unknownFlakePct`) so the pick degrades gracefully on a cold start.
     **Within a band the tiebreak is mean throughput** (`meanSpeed`, rolling 1h of the rare speedtest sweep,
-    `speedWindow`), higher wins; **ping (`Latency`) is the fallback only when speed isn't measured for both
+    `speedWindow`), higher wins. The sweep (`runSpeeds`) measures each node **as an entry chained to the TUN slot's first hop-able
+    main** (`speedRefMain`), one test at a time — NOT the node as its own exit: a node can be fast alone yet crawl in
+    front of the main (its path to the main's server is throttled; measured 2026-11-05: 🇩🇪 22.8 Mbps alone vs 0.5
+    chained). Reachable-but-failed transfers score 0; a non-2xx reference reply (`ErrSpeedRefused`, e.g. Cloudflare
+    429 — all chained tests share the main's exit IP) rotates to the next `speedURLs` reference (Cloudflare → Hetzner fsn1 → OVH → Hetzner hel1) and retests the same
+    node; the sweep aborts (keeping prior samples) only if every reference refuses. Other failures count against the node
+    only once the current reference is *proven* this sweep (some node measured through it); before that the reference is
+    rotated instead, so a broken reference can't zero the whole pool. Speed requests send `speedUA` (curl UA) — Hetzner
+    closes Go's default UA with EOF. The one-time ping→speed upgrade (`liveBySpeed`) waits for a *completed* sweep with
+    measurements (`speedsSwept`) and only swaps to a strictly faster entry. **Escape hatch:** `NoSpeedTest` (`no_speedtest`, Config tab
+    "Speedtest sweep", picked up within one pool refresh via the `speedOff` atomic) stops sweeps — mid-sweep too — and makes
+    `meanSpeed` report every node unmeasured, so ranking falls straight back to stability + ping and no speed upgrade fires;
+    samples are kept and count again when switched back on. Live progress is `Status.Sweep` (set per node by `setSweep`, which also refreshes the pools' speeds so a
+    result shows the moment its test ends); the TUI renders a spinner on the node under test + `⚡ sweep N/M → <main>` on
+    Subs and Status (spinner ticks only while a sweep runs), and a measured-but-<1 Mbps node (`SpeedN>0`) in red. **Ping (`Latency`) is the fallback only when speed isn't measured for both
     candidates** (e.g. cold start, before the first sweep). The flake % is per-node (Country pool = T2,
     Bypass = T3) and shown in the TUI **Subs** tab: a per-node column plus a per-tier
     `flakiness 1h: T2 …·N  T3 …·N` summary; the Mbps column now shows the **mean**. Direct-egress probes are
