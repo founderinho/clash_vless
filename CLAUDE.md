@@ -11,6 +11,8 @@ or a **system-wide TUN** — with automatic tiered failover.
     seven raster sizes; `app/icon_windows_amd64.syso` embeds it into Explorer/launcher resources.
   - `internal/store` — on-disk state (subs, cached nodes, **slots** = per-port failover pools of mains,
     stable device identity, tunables).
+  - `internal/gui` — native Fyne desktop GUI. Its connection control is a clickable, pointer-cursor switch with the
+    same track/thumb shape and state colors as Android, rather than a drag-only slider.
   - `internal/happ` — fetches a Remnawave sub (Happ 3.x mimic; optional SOCKS5 fetch proxy); parses
     base64 / URI-list / xray-JSON, building a `vless://` outbound for URI-list nodes so they're usable.
   - `internal/xray` — `vless://` → xray outbound, and full-config assembly (incl. entry→main chaining).
@@ -60,9 +62,10 @@ or a **system-wide TUN** — with automatic tiered failover.
   probes/live dials to one node share **one bounded** conn. Re-apply **both** after any re-vendor.
 - `android/` — **Android app** (minimal UX, core only). No Gradle: `android/build.sh` does
   go → javac → d8 → aapt2 → zipalign → apksigner into `dist/clashvless.apk`. **minSdk 24** (Android 7; API-26
-  calls are version-guarded), target 34. ABIs: **arm64** + **armeabi-v7a**, both built **with cgo** via the NDK's
-  clang (`$ANDROID_HOME/ndk`) so Go resolves through bionic `getaddrinfo` → netd = the **system resolver** (Private
-  DNS, per-network — the browser's path). Without an NDK only a cgo-less arm64 builds (Go's own DNS). The Go
+  calls are version-guarded), target 34. ABIs: **arm64** + **armeabi-v7a** + **x86_64** (for emulator tests), all built
+  **with cgo** via the NDK's clang (`$ANDROID_HOME/ndk`, Windows/Linux host toolchains) so Go resolves through bionic
+  `getaddrinfo` → netd = the **system resolver** (Private DNS, per-network — the browser's path). Without an NDK only
+  a cgo-less arm64 build is produced (Go's own DNS). The Go
   binary ships as `lib/<abi>/libclashvless.so` (`extractNativeLibs=true`) and is **exec'd as a child
   process** — the same CLI, `--config <filesDir>`. **CLI access**: the APK is `debuggable` and the app writes
   `files/cv` (a wrapper with the right `--config`/DNS env), so `adb shell run-as com.clashvless sh files/cv
@@ -90,8 +93,9 @@ or a **system-wide TUN** — with automatic tiered failover.
   out), so every edit applies **live** to the running daemon, VPN up or not. The footer has **Settings**,
   **Overview**, and **Log**. All three are page switches; Overview contains connection metrics, route,
   endpoints, and pools. An enlarged native switch in the header controls the VPN and displays
-  Disconnected/Connecting/Connected in a fixed-width, single-line label that cannot clip the final letters. Settings uses a section selector for network, VPN, routes, providers/nodes,
-  updates, and device identity, retaining all former tab controls (including HWID and slot/main management).
+  Disconnected/Connecting/Connected in a fixed-width, single-line label that cannot clip the final letters. Settings uses
+  a two-column grid of always-visible section buttons for network, VPN, routes, providers/nodes, updates, and device
+  identity, retaining all former controls (including HWID and slot/main management).
   `VpnSvc` publishes a live notification with the canonical resource-ID overload of `setSmallIcon`, using a dedicated
   white-on-transparent drawable. The application icon is a separate legacy mipmap plus an Android 8+ adaptive icon
   (including monochrome), so OEM notification rows that substitute the application icon do not depend on the small

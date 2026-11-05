@@ -32,18 +32,25 @@ CODE=$(echo "$VER" | awk -F. '{print $1*10000 + $2*100 + $3}')
 
 rm -rf "$OUT" && mkdir -p "$OUT/classes" "$ROOT/dist"
 
-# With the NDK both ABIs build with cgo, so Go resolves via bionic/netd (the system
-# resolver, Private DNS included). Without it only a cgo-less arm64 builds.
+# With the NDK all three ABIs build with cgo, so Go resolves via bionic/netd (the
+# system resolver, Private DNS included). Without it only a cgo-less arm64 builds.
 gob() {
   mkdir -p "$OUT/apk/lib/$1"
   go -C "$ROOT/app" build -trimpath -ldflags="-s -w" -o "$OUT/apk/lib/$1/libclashvless.so" .
 }
 if [ -n "$NDK" ]; then
-  TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+  HOST=linux-x86_64
+  case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) HOST=windows-x86_64 ;; esac
+  TC="$NDK/toolchains/llvm/prebuilt/$HOST/bin"
+  if [ "$HOST" = windows-x86_64 ]; then
+    TC=$(powershell.exe -NoProfile -Command "(New-Object -ComObject Scripting.FileSystemObject).GetFolder('$(cygpath -w "$TC")').ShortPath" | tr -d '\r')
+    TC=$(cygpath "$TC")
+  fi
   CC="$TC/aarch64-linux-android$MINSDK-clang" GOOS=android GOARCH=arm64 CGO_ENABLED=1 gob arm64-v8a
   CC="$TC/armv7a-linux-androideabi$MINSDK-clang" GOOS=android GOARCH=arm GOARM=7 CGO_ENABLED=1 gob armeabi-v7a
+  CC="$TC/x86_64-linux-android$MINSDK-clang" GOOS=android GOARCH=amd64 CGO_ENABLED=1 gob x86_64
 else
-  echo "no NDK — cgo-less arm64 only (Go's own DNS, no armeabi-v7a)"
+  echo "no NDK — cgo-less arm64 only (Go's own DNS, no armeabi-v7a or x86_64)"
   GOOS=android GOARCH=arm64 CGO_ENABLED=0 gob arm64-v8a
 fi
 

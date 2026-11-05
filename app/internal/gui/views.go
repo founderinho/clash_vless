@@ -33,16 +33,10 @@ func (d *dashboard) overviewView() fyne.CanvasObject {
 			vpnLabel = "VPN on · Connected"
 		}
 	}
-	vpnSlider := widget.NewSlider(0, 1)
-	vpnSlider.SetValue(map[bool]float64{false: 0, true: 1}[d.state.TunEnabled])
-	vpnSlider.OnChangeEnded = func(value float64) {
-		on := value >= 0.5
-		vpnSlider.SetValue(map[bool]float64{false: 0, true: 1}[on])
-		if on != d.state.TunEnabled {
-			d.patch(map[string]any{"tun_enabled": on})
-		}
-	}
-	vpnControl := container.NewVBox(headingText(vpnLabel, 12), container.New(&widthLayout{width: 100}, vpnSlider))
+	vpnSwitch := newConnectionSwitch(d.state.TunEnabled, func(on bool) {
+		d.patch(map[string]any{"tun_enabled": on})
+	})
+	vpnControl := container.NewVBox(headingText(vpnLabel, 12), container.NewCenter(vpnSwitch))
 
 	route := status.Entry + "  →  " + status.Main
 	if !online {

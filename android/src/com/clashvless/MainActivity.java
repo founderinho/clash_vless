@@ -19,14 +19,13 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
-import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -340,42 +339,24 @@ public class MainActivity extends Activity {
 
     private void renderConfig(JSONObject st) {
         String[] names = {"Network", "VPN", "Exit routes", "Providers & nodes", "Updates", "Device"};
-        Spinner sections = new Spinner(this);
-        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, names) {
-            @Override
-            public View getView(int position, View convertView, android.view.ViewGroup parent) {
-                TextView view = (TextView) super.getView(position, convertView, parent);
-                view.setTextColor(TEXT);
-                view.setTextSize(14);
-                view.setPadding(dp(12), dp(8), dp(12), dp(8));
-                return view;
-            }
-
-            @Override
-            public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
-                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
-                view.setTextColor(TEXT);
-                view.setBackgroundColor(CARD);
-                view.setPadding(dp(16), dp(12), dp(16), dp(12));
-                return view;
-            }
-        };
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        sections.setAdapter(adapter);
-        sections.setPopupBackgroundDrawable(round(CARD, 8));
-        sections.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
-            @Override
-            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
-                if (configSection != position) {
-                    configSection = position;
-                    render();
-                }
-            }
-            @Override
-            public void onNothingSelected(android.widget.AdapterView<?> parent) { }
-        });
-        sections.setSelection(configSection);
-        body.addView(sections, new LinearLayout.LayoutParams(-1, dp(48)));
+        GridLayout sections = new GridLayout(this);
+        sections.setColumnCount(2);
+        for (int i = 0; i < names.length; i++) {
+            final int selected = i;
+            Button section = btn(names[i], i == configSection, () -> {
+                configSection = selected;
+                render();
+            });
+            section.setTextSize(13);
+            section.setGravity(Gravity.CENTER);
+            GridLayout.LayoutParams params = new GridLayout.LayoutParams();
+            params.width = 0;
+            params.height = dp(48);
+            params.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1, 1f);
+            params.setMargins(dp(2), dp(2), dp(2), dp(2));
+            sections.addView(section, params);
+        }
+        body.addView(sections);
 
         if (configSection == 0) {
             LinearLayout failover = card("Automatic failover", "Route selection, health checks, and recovery");
