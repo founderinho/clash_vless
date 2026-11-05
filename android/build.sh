@@ -47,19 +47,20 @@ else
   GOOS=android GOARCH=arm64 CGO_ENABLED=0 gob arm64-v8a
 fi
 
-mapfile -t SOURCES < <(find src -name '*.java')
-javac -nowarn --release 17 -classpath "$JAR" -d "$OUT/classes" "${SOURCES[@]}"
-mapfile -t CLASSES < <(find "$OUT/classes" -name '*.class')
-java -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --release --min-api $MINSDK --lib "$JAR" --output "$OUT/apk" "${CLASSES[@]}"
-
 mkdir -p "$OUT/res/drawable-nodpi" "$OUT/apk/assets/branding/png"
 cp "$ROOT/app/branding/png/logo.png" "$OUT/res/drawable-nodpi/clashvless_logo.png"
 cp "$ROOT/app/branding/tokens.json" "$OUT/apk/assets/branding/tokens.json"
 cp "$ROOT/app/branding/png/"*.png "$OUT/apk/assets/branding/png/"
 "$BT/aapt2" compile --dir "$OUT/res" -o "$OUT/res.zip"
-"$BT/aapt2" link -I "$JAR" --manifest AndroidManifest.xml \
+"$BT/aapt2" compile --dir res -o "$OUT/app-res.zip"
+"$BT/aapt2" link -I "$JAR" --manifest AndroidManifest.xml --java "$OUT/generated" \
   --min-sdk-version $MINSDK --target-sdk-version 34 --version-name "$VER" --version-code "$CODE" \
-  -o "$OUT/base.apk" "$OUT/res.zip"
+  -o "$OUT/base.apk" "$OUT/res.zip" "$OUT/app-res.zip"
+
+mapfile -t SOURCES < <(find src "$OUT/generated" -name '*.java')
+javac -nowarn --release 17 -classpath "$JAR" -d "$OUT/classes" "${SOURCES[@]}"
+mapfile -t CLASSES < <(find "$OUT/classes" -name '*.class')
+java -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --release --min-api $MINSDK --lib "$JAR" --output "$OUT/apk" "${CLASSES[@]}"
 (cd "$OUT/apk" && zip -qr "$OUT/base.apk" classes.dex lib assets)
 "$BT/zipalign" -f -p 4 "$OUT/base.apk" "$OUT/aligned.apk"
 

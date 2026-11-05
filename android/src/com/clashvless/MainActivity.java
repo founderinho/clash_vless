@@ -19,12 +19,15 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.animation.DecelerateInterpolator;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
-import android.widget.HorizontalScrollView;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -39,19 +42,22 @@ import java.util.function.IntConsumer;
 
 /** Native Android dashboard over the same daemon protocol as desktop. */
 public class MainActivity extends Activity {
-    private static final String[] TABS = {"Overview", "Subscriptions", "Routes", "Activity", "Settings"};
-    private static final String[] ICONS = {"overview", "subscriptions", "routes", "activity", "settings"};
-    private static final int STATUS = 0, SUBS = 1, MAIN = 2, LOG = 3, CONFIG = 4;
+    static final String ACTION_CONNECT = "com.clashvless.CONNECT";
+    private static final String[] TABS = {"Settings", "Overview", "Log"};
+    private static final String[] ICONS = {"settings", "overview", "activity"};
+    private static final int CONFIG = 0, STATUS = 1, LOG = 2;
     private static int BG = Color.rgb(15, 19, 25), CARD = Color.rgb(24, 30, 38);
     private static int TEXT = Color.rgb(230, 235, 241), MUTED = Color.rgb(145, 157, 171);
     private static int ACCENT = Color.rgb(104, 213, 189), DANGER = Color.rgb(244, 126, 139);
 
-    private int tab, configSection;
-    private TextView headline, statusLine;
-    private Button vpnBtn;
+    private int tab = STATUS, configSection;
+    private boolean switchUpdating;
+    private TextView connectionLabel;
+    private Switch vpnSwitch;
     private final Button[] tabBtns = new Button[TABS.length];
-    private LinearLayout body;
-    private ScrollView scroll;
+    private FrameLayout contentFrame, overviewOverlay;
+    private LinearLayout body, overviewBody;
+    private ScrollView scroll, overviewScroll;
     private TextView logView;
 
     @Override
@@ -65,50 +71,70 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(BG);
-        root.setPadding(dp(14), dp(10), dp(14), 0);
+        root.setPadding(dp(14), dp(8), dp(14), 0);
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
         ImageView logo = new ImageView(this);
         logo.setImageBitmap(loadBitmap("logo"));
-        top.addView(logo, new LinearLayout.LayoutParams(dp(34), dp(34)));
-        LinearLayout names = new LinearLayout(this);
-        names.setOrientation(LinearLayout.VERTICAL);
-        names.setPadding(dp(8), 0, dp(8), 0);
-        headline = text("clashvless", 20, TEXT, true);
-        statusLine = text("Starting local engine…", 11, MUTED, false);
-        statusLine.setMaxLines(2);
-        names.addView(headline);
-        names.addView(statusLine);
-        top.addView(names, new LinearLayout.LayoutParams(0, -2, 1));
-        vpnBtn = btn("Connect", true, this::toggleVpn);
-        top.addView(vpnBtn);
+        top.addView(logo, new LinearLayout.LayoutParams(dp(38), dp(38)));
+        TextView headline = text("clashvless", 21, TEXT, true);
+        headline.setPadding(dp(10), 0, dp(10), 0);
+        top.addView(headline, new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout connection = new LinearLayout(this);
+        connection.setOrientation(LinearLayout.VERTICAL);
+        connection.setGravity(Gravity.CENTER_HORIZONTAL);
+        connectionLabel = text("Disconnected", 11, MUTED, true);
+        connection.addView(connectionLabel);
+        vpnSwitch = new Switch(this);
+        vpnSwitch.setShowText(false);
+        vpnSwitch.setThumbTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{BG, MUTED}));
+        vpnSwitch.setTrackTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{ACCENT, Color.rgb(51, 66, 88)}));
+        vpnSwitch.setOnCheckedChangeListener((view, on) -> {
+            if (!switchUpdating) toggleVpn();
+        });
+        connection.addView(vpnSwitch, new LinearLayout.LayoutParams(dp(58), dp(34)));
+        top.addView(connection);
         root.addView(top);
 
-        HorizontalScrollView tabScroll = new HorizontalScrollView(this);
-        tabScroll.setHorizontalScrollBarEnabled(false);
-        LinearLayout tabs = new LinearLayout(this);
-        tabs.setPadding(0, dp(10), 0, dp(8));
-        for (int i = 0; i < TABS.length; i++) {
-            final int selected = i;
-            tabBtns[i] = btn(TABS[i], false, () -> { tab = selected; render(); });
-            setButtonIcon(tabBtns[i], ICONS[i], MUTED);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(36));
-            params.setMargins(0, 0, dp(5), 0);
-            tabs.addView(tabBtns[i], params);
-        }
-        tabScroll.addView(tabs);
-        root.addView(tabScroll);
-
+        contentFrame = new FrameLayout(this);
         scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
-        body.setPadding(0, 0, 0, dp(30));
+        body.setPadding(0, dp(6), 0, dp(20));
         scroll.addView(body, new ScrollView.LayoutParams(-1, -2));
-        root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        contentFrame.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        root.addView(contentFrame, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        LinearLayout tabs = new LinearLayout(this);
+        tabs.setGravity(Gravity.CENTER);
+        tabs.setPadding(0, dp(3), 0, dp(5));
+        for (int i = 0; i < TABS.length; i++) {
+            final int selected = i;
+            tabBtns[i] = btn(TABS[i], false, () -> navigate(selected));
+            tabBtns[i].setTextSize(11);
+            setFooterIcon(tabBtns[i], ICONS[i], MUTED);
+            tabs.addView(tabBtns[i], new LinearLayout.LayoutParams(0, dp(56), 1));
+        }
+        root.addView(tabs);
         setContentView(root);
         Ctl.start(this);
+        handleConnectIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleConnectIntent(intent);
+    }
+
+    private void handleConnectIntent(Intent intent) {
+        if (intent != null && ACTION_CONNECT.equals(intent.getAction()) && !VpnSvc.running) {
+            contentFrame.post(this::toggleVpn);
+            intent.setAction(null);
+        }
     }
 
     @Override
@@ -116,8 +142,9 @@ public class MainActivity extends Activity {
         super.onStart();
         Core.uiVisible = true;
         Ctl.listener = stateChanged -> runOnUiThread(() -> {
-            if (tab == STATUS || tab == SUBS || tab == MAIN || stateChanged) render();
-            else renderHead();
+            renderHead();
+            if (overviewOverlay != null) updateOverviewContent();
+            else if (stateChanged && tab == CONFIG) render();
         });
         render();
     }
@@ -131,9 +158,23 @@ public class MainActivity extends Activity {
         super.onStop();
     }
 
+    private void navigate(int selected) {
+        if (selected == STATUS) {
+            showOverview();
+            return;
+        }
+        hideOverview(false);
+        tab = selected;
+        render();
+    }
+
     private void render() {
         renderHead();
         for (int i = 0; i < TABS.length; i++) styleTab(tabBtns[i], i == tab);
+        if (tab == STATUS) {
+            showOverview();
+            return;
+        }
         body.removeAllViews();
         if (tab != LOG) Core.setListener(null);
         JSONObject st = Ctl.state;
@@ -141,22 +182,96 @@ public class MainActivity extends Activity {
             body.addView(card("Connecting", "Starting the local engine and reading its state…"));
             return;
         }
-        switch (tab) {
-            case STATUS: renderStatus(st); break;
-            case SUBS: renderSubs(st); break;
-            case MAIN: renderMain(st); break;
-            case LOG: renderLog(); break;
-            case CONFIG: renderConfig(st); break;
-        }
+        if (tab == LOG) renderLog();
+        else renderConfig(st);
     }
 
     private void renderHead() {
         JSONObject s = Ctl.status;
-        statusLine.setText((VpnSvc.running ? "VPN on · " : "VPN off · ") + (s == null ? "starting" : line(s)));
-        vpnBtn.setText(VpnSvc.running ? "Disconnect" : "Connect");
+        boolean online = VpnSvc.running && s != null && s.optInt("Tier") > 0;
+        connectionLabel.setText(!VpnSvc.running ? "Disconnected" : online ? "Connected" : "Connecting");
+        connectionLabel.setTextColor(online ? ACCENT : MUTED);
+        switchUpdating = true;
+        vpnSwitch.setChecked(VpnSvc.running);
+        switchUpdating = false;
     }
 
-    private static String line(JSONObject s) {
+    private void showOverview() {
+        tab = STATUS;
+        renderHead();
+        for (int i = 0; i < TABS.length; i++) styleTab(tabBtns[i], i == tab);
+        Core.setListener(null);
+        if (overviewOverlay != null) {
+            updateOverviewContent();
+            return;
+        }
+        overviewOverlay = new FrameLayout(this);
+        View scrim = new View(this);
+        scrim.setBackgroundColor(0x99000000);
+        scrim.setAlpha(0);
+        scrim.setOnClickListener(view -> hideOverview(true));
+        overviewOverlay.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
+
+        LinearLayout sheet = new LinearLayout(this);
+        sheet.setOrientation(LinearLayout.VERTICAL);
+        sheet.setPadding(dp(14), dp(7), dp(14), dp(16));
+        GradientDrawable background = round(CARD, 20);
+        background.setCornerRadii(new float[]{dp(20), dp(20), dp(20), dp(20), 0, 0, 0, 0});
+        sheet.setBackground(background);
+        View handle = new View(this);
+        handle.setBackground(round(MUTED, 2));
+        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(38), dp(4));
+        handleParams.gravity = Gravity.CENTER_HORIZONTAL;
+        handleParams.bottomMargin = dp(5);
+        sheet.addView(handle, handleParams);
+        LinearLayout heading = row(text("Overview", 19, TEXT, true), btn("Close", false, () -> hideOverview(true)));
+        sheet.addView(heading);
+        overviewScroll = new ScrollView(this);
+        overviewBody = new LinearLayout(this);
+        overviewBody.setOrientation(LinearLayout.VERTICAL);
+        overviewBody.setPadding(0, dp(4), 0, dp(8));
+        overviewScroll.addView(overviewBody, new ScrollView.LayoutParams(-1, -2));
+        sheet.addView(overviewScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        int height = Math.round(getResources().getDisplayMetrics().heightPixels * 0.74f);
+        FrameLayout.LayoutParams sheetParams = new FrameLayout.LayoutParams(-1, height, Gravity.BOTTOM);
+        overviewOverlay.addView(sheet, sheetParams);
+        contentFrame.addView(overviewOverlay, new FrameLayout.LayoutParams(-1, -1));
+        updateOverviewContent();
+        scrim.animate().alpha(1).setDuration(220).start();
+        sheet.setTranslationY(height);
+        sheet.animate().translationY(0).setDuration(280).setInterpolator(new DecelerateInterpolator()).start();
+    }
+
+    private void updateOverviewContent() {
+        if (overviewOverlay == null || overviewBody == null) return;
+        overviewBody.removeAllViews();
+        JSONObject st = Ctl.state;
+        if (!Ctl.connected || st == null) overviewBody.addView(card("Connecting", "Starting the local engine and reading its state…"));
+        else renderStatus(st, overviewBody);
+    }
+
+    private void hideOverview(boolean animated) {
+        FrameLayout overlay = overviewOverlay;
+        if (overlay == null) return;
+        overviewOverlay = null;
+        overviewBody = null;
+        overviewScroll = null;
+        if (!animated) {
+            contentFrame.removeView(overlay);
+            return;
+        }
+        View sheet = overlay.getChildAt(1);
+        overlay.getChildAt(0).animate().alpha(0).setDuration(180).start();
+        sheet.animate().translationY(sheet.getHeight()).setDuration(200).withEndAction(() -> contentFrame.removeView(overlay)).start();
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (overviewOverlay != null) hideOverview(true);
+        else super.onBackPressed();
+    }
+
+    static String line(JSONObject s) {
         int tier = s.optInt("Tier");
         long ms = s.optLong("Egress") / 1_000_000;
         String main = s.optString("Main");
@@ -166,7 +281,7 @@ public class MainActivity extends Activity {
         return "T" + tier + " " + s.optString("Entry") + " → " + main + " · " + ms + " ms";
     }
 
-    private void renderStatus(JSONObject st) {
+    private void renderStatus(JSONObject st, LinearLayout target) {
         JSONObject s = Ctl.status;
         boolean online = s != null && s.optInt("Tier") > 0;
         LinearLayout hero = card(online ? "Connected" : "Not connected",
@@ -178,8 +293,8 @@ public class MainActivity extends Activity {
         addMetric(metrics, "Healthy nodes", okCount(s == null ? null : s.optJSONArray("Country")) + " / " + okCount(s == null ? null : s.optJSONArray("Bypass")));
         addMetric(metrics, "Active tier", online ? "T" + s.optInt("Tier") : "—");
         hero.addView(metrics);
-        body.addView(hero);
-        if (s != null && !s.optString("TunErr").isEmpty()) body.addView(card("VPN error", s.optString("TunErr")));
+        target.addView(hero);
+        if (s != null && !s.optString("TunErr").isEmpty()) target.addView(card("VPN error", s.optString("TunErr")));
 
         LinearLayout endpoints = card("Local endpoints", VpnSvc.running ? "System-wide VPN is on" : "Native SOCKS5 listeners");
         JSONArray slots = st.optJSONArray("slots");
@@ -191,20 +306,20 @@ public class MainActivity extends Activity {
                     btn("Copy", false, () -> copy(address)));
             endpoints.addView(row);
         }
-        body.addView(endpoints);
+        target.addView(endpoints);
         if (s != null) {
             LinearLayout pools = card("Entry pools", "Live health and tier selection");
             pools.addView(text("Country · T2     " + okCount(s.optJSONArray("Country")) + " online", 14, TEXT, false));
             pools.addView(text("Bypass · T3       " + okCount(s.optJSONArray("Bypass")) + " online", 14, TEXT, false));
             if (!s.optString("Note").isEmpty()) pools.addView(text(s.optString("Note"), 12, MUTED, false));
-            body.addView(pools);
+            target.addView(pools);
         }
         if (!anyMain(st)) {
             LinearLayout setup = card("Finish your setup", "Subscriptions provide hops. Add a final VLESS exit to carry your traffic.");
             setup.addView(btn("Add final exit", true, () -> askMain(st, 0)));
-            body.addView(setup);
+            target.addView(setup);
         }
-        body.addView(btn("Recheck every route", false, () -> Ctl.cmd("kick")));
+        target.addView(btn("Recheck every route", false, () -> Ctl.cmd("kick")));
     }
 
     private void renderSubs(JSONObject st) {
@@ -306,16 +421,43 @@ public class MainActivity extends Activity {
     }
 
     private void renderConfig(JSONObject st) {
-        String[] names = {"Network", "VPN", "Updates", "Device"};
-        LinearLayout sections = new LinearLayout(this);
-        for (int i = 0; i < names.length; i++) {
-            final int selected = i;
-            Button button = btn(names[i], configSection == i, () -> { configSection = selected; render(); });
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(34), 1);
-            params.setMargins(dp(2), 0, dp(2), dp(8));
-            sections.addView(button, params);
-        }
-        body.addView(sections);
+        String[] names = {"Network", "VPN", "Exit routes", "Providers & nodes", "Updates", "Device"};
+        Spinner sections = new Spinner(this);
+        ArrayAdapter<String> adapter = new ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, names) {
+            @Override
+            public View getView(int position, View convertView, android.view.ViewGroup parent) {
+                TextView view = (TextView) super.getView(position, convertView, parent);
+                view.setTextColor(TEXT);
+                view.setTextSize(14);
+                view.setPadding(dp(12), dp(8), dp(12), dp(8));
+                return view;
+            }
+
+            @Override
+            public View getDropDownView(int position, View convertView, android.view.ViewGroup parent) {
+                TextView view = (TextView) super.getDropDownView(position, convertView, parent);
+                view.setTextColor(TEXT);
+                view.setBackgroundColor(CARD);
+                view.setPadding(dp(16), dp(12), dp(16), dp(12));
+                return view;
+            }
+        };
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        sections.setAdapter(adapter);
+        sections.setPopupBackgroundDrawable(round(CARD, 8));
+        sections.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(android.widget.AdapterView<?> parent, View view, int position, long id) {
+                if (configSection != position) {
+                    configSection = position;
+                    render();
+                }
+            }
+            @Override
+            public void onNothingSelected(android.widget.AdapterView<?> parent) { }
+        });
+        sections.setSelection(configSection);
+        body.addView(sections, new LinearLayout.LayoutParams(-1, dp(48)));
 
         if (configSection == 0) {
             LinearLayout failover = card("Automatic failover", "Route selection, health checks, and recovery");
@@ -345,6 +487,10 @@ public class MainActivity extends Activity {
             intRow(tun, st, "TUN MTU · 0 = default", "tun_mtu", 0, 0, 9000);
             body.addView(tun);
         } else if (configSection == 2) {
+            renderMain(st);
+        } else if (configSection == 3) {
+            renderSubs(st);
+        } else if (configSection == 4) {
             LinearLayout updates = card("Subscription updates", "Background refresh and optional fetch proxy");
             boolRow(updates, st, "Automatic refresh", "no_auto_fetch", true);
             intRow(updates, st, "Refresh interval · hours", "fetch_interval_h", 24, 1, 168);
@@ -574,22 +720,23 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void setButtonIcon(Button button, String name, int tint) {
+    private void setFooterIcon(Button button, String name, int tint) {
         Bitmap bitmap = loadBitmap(name);
         if (bitmap == null) return;
         BitmapDrawable icon = new BitmapDrawable(getResources(), bitmap);
         icon.setTint(tint);
-        icon.setBounds(0, 0, dp(17), dp(17));
-        button.setCompoundDrawables(icon, null, null, null);
-        button.setCompoundDrawablePadding(dp(6));
+        icon.setBounds(0, 0, dp(21), dp(21));
+        button.setCompoundDrawables(null, icon, null, null);
+        button.setCompoundDrawablePadding(dp(2));
     }
 
     private void styleTab(Button button, boolean active) {
-        button.setTextColor(active ? BG : MUTED);
-        GradientDrawable content = round(active ? ACCENT : CARD, 8);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3368d5bd), content, round(Color.WHITE, 8)));
+        int color = active ? ACCENT : MUTED;
+        button.setTextColor(color);
+        GradientDrawable content = round(active ? Color.rgb(27, 37, 44) : Color.TRANSPARENT, 10);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3368d5bd), content, round(Color.WHITE, 10)));
         for (int i = 0; i < tabBtns.length; i++) {
-            if (tabBtns[i] == button) setButtonIcon(button, ICONS[i], active ? BG : MUTED);
+            if (tabBtns[i] == button) setFooterIcon(button, ICONS[i], color);
         }
     }
 

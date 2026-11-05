@@ -23,7 +23,7 @@ var (
 
 // Files contains the logo, tokens, SVG icons, and their Android-ready PNG versions.
 //
-//go:embed logo.svg tokens.json icons/*.svg png/*.png
+//go:embed logo.svg tokens.json icons/*.svg png/*.png windows/clashvless.ico
 var Files embed.FS
 
 func Logo() ([]byte, error) {

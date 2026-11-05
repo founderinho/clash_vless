@@ -26,13 +26,23 @@ func (d *dashboard) overviewView() fyne.CanvasObject {
 	if online {
 		connection = "Connected"
 	}
-	vpnButton := widget.NewButton("Turn VPN on", func() {
-		d.patch(map[string]any{"tun_enabled": !d.state.TunEnabled})
-	})
+	vpnLabel := "VPN off"
 	if d.state.TunEnabled {
-		vpnButton.SetText("Turn VPN off")
+		vpnLabel = "VPN on · Connecting"
+		if online {
+			vpnLabel = "VPN on · Connected"
+		}
 	}
-	vpnButton.Importance = widget.HighImportance
+	vpnSlider := widget.NewSlider(0, 1)
+	vpnSlider.SetValue(map[bool]float64{false: 0, true: 1}[d.state.TunEnabled])
+	vpnSlider.OnChangeEnded = func(value float64) {
+		on := value >= 0.5
+		vpnSlider.SetValue(map[bool]float64{false: 0, true: 1}[on])
+		if on != d.state.TunEnabled {
+			d.patch(map[string]any{"tun_enabled": on})
+		}
+	}
+	vpnControl := container.NewVBox(headingText(vpnLabel, 12), container.New(&widthLayout{width: 100}, vpnSlider))
 
 	route := status.Entry + "  →  " + status.Main
 	if !online {
@@ -52,7 +62,7 @@ func (d *dashboard) overviewView() fyne.CanvasObject {
 		tier = fmt.Sprintf("T%d", status.Tier)
 	}
 	connectionItems := []fyne.CanvasObject{
-		container.NewBorder(nil, nil, statusText(connection, online), vpnButton),
+		container.NewBorder(nil, nil, statusText(connection, online), vpnControl),
 		ellipsized(route),
 		container.NewGridWithColumns(3,
 			metric("Latency", milliseconds(status.Egress)),

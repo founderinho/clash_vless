@@ -96,10 +96,7 @@ func (d *dashboard) buildShell() {
 	logo := canvas.NewImageFromResource(logoResource())
 	logo.FillMode = canvas.ImageFillContain
 	logo.SetMinSize(fyne.NewSize(30, 30))
-	brand := container.NewHBox(logo, container.NewVBox(
-		headingText(branding.Name, 16),
-		muted("ROUTE SIGNAL"),
-	))
+	brand := container.NewHBox(logo, headingText(branding.Name, 16))
 	items := make([]fyne.CanvasObject, 0, 5)
 	for _, item := range []struct {
 		page string

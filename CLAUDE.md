@@ -85,12 +85,14 @@ or a **system-wide TUN** — with automatic tiered failover.
   Disconnect kills it and `Ctl`'s loop brings an idle one back if the UI is visible; leaving the UI with the VPN
   off stops it. **UI** (`MainActivity`, bare, programmatic views) is a **control client like the TUI** (`Ctl`:
   `LocalSocket` → `control.sock`, JSON lines; `state`/`status` events in, `patch`/`addsub`/`rmsub`/`refetch`/`kick`
-  out), so every edit applies **live** to the running daemon, VPN up or not. Tabs mirror the TUI: **Status**
-  (per-slot tier, pool up-counts, pins, recheck) · **Subs** (add/refetch/remove, all-vs-one mode, entry nodes
-  with latency/Mbps/flake — tap to pin) · **Main** (slots + mains; tap for enable/TUN slot/port/add main/delete,
-  main enable/w-o-hop/delete; an empty slot shows a tap-to-add hint — a fresh install has no mains, since the
-  sub only supplies hops and there's no wizard on Android) · **Log** (daemon stdout) · **Config** (tab 5: interval/timeout/thresholds/pin
-  tier/force-hop/auto-fetch/fetch proxy/log level/allow-LAN/ICMP/**HWID** — paste one to share a panel slot).
+  out), so every edit applies **live** to the running daemon, VPN up or not. The footer has **Settings**,
+  **Overview**, and **Log**. Overview is an animated bottom sheet with connection metrics, route, endpoints,
+  and pools; Settings and Log switch the main page. A native switch in the header controls the VPN and displays
+  Disconnected/Connecting/Connected. Settings uses a section selector for network, VPN, routes, providers/nodes,
+  updates, and device identity, retaining all former tab controls (including HWID and slot/main management).
+  `VpnSvc` publishes a branded live notification with the selected route/latency and a Disconnect action.
+  `VpnTileService` adds a quick-settings tile that starts/stops the VPN directly after Android's one-time VPN
+  consent; consent opens MainActivity. Resource linking runs before javac and generates `R.java`.
   Slot/main edits are done Java-side on the state JSON and sent as a top-level `slots` patch (full objects —
   the daemon's patch is a field replace; a fresh slot's `mains` is JSON `null` — a Go nil slice — so the app
   creates the array). Edit failures go to the Log tab + a toast, never swallowed.
