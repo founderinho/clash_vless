@@ -49,7 +49,7 @@ fi
 
 mkdir -p "$OUT/res/drawable-nodpi" "$OUT/apk/assets/branding/png"
 cp "$ROOT/app/branding/png/logo.png" "$OUT/res/drawable-nodpi/clashvless_logo.png"
-cp "$ROOT/app/branding/png/logo.png" "$OUT/res/drawable-nodpi/clashvless_notification.png"
+cp "$ROOT/app/branding/png/notification.png" "$OUT/res/drawable-nodpi/clashvless_notification.png"
 cp "$ROOT/app/branding/tokens.json" "$OUT/apk/assets/branding/tokens.json"
 cp "$ROOT/app/branding/png/"*.png "$OUT/apk/assets/branding/png/"
 "$BT/aapt2" compile --dir "$OUT/res" -o "$OUT/res.zip"

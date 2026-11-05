@@ -37,6 +37,20 @@ func TestSharedAssets(t *testing.T) {
 	if visible*4 < bounds.Dx()*bounds.Dy() {
 		t.Fatalf("launcher logo is mostly blank: %d visible pixels", visible)
 	}
+	notification, err := PNG("notification")
+	if err != nil {
+		t.Fatal(err)
+	}
+	notificationImage, err := png.Decode(bytes.NewReader(notification))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, alpha := notificationImage.At(0, 0).RGBA(); alpha != 0 {
+		t.Fatal("notification icon must have transparent corners")
+	}
+	if red, green, blue, alpha := notificationImage.At(96, 26).RGBA(); alpha == 0 || red != 0xffff || green != 0xffff || blue != 0xffff {
+		t.Fatal("notification icon must have a white shield outline")
+	}
 	windowsIcon, err := Files.ReadFile("windows/clashvless.ico")
 	if err != nil || len(windowsIcon) < 6 || windowsIcon[4] != 7 {
 		t.Fatalf("multi-resolution Windows icon: %v", err)

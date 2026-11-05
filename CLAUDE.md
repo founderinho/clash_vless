@@ -92,8 +92,8 @@ or a **system-wide TUN** — with automatic tiered failover.
   endpoints, and pools. An enlarged native switch in the header controls the VPN and displays
   Disconnected/Connecting/Connected in a fixed-width, single-line label that cannot clip the final letters. Settings uses a section selector for network, VPN, routes, providers/nodes,
   updates, and device identity, retaining all former tab controls (including HWID and slot/main management).
-  `VpnSvc` publishes a live notification with a bitmap-backed Clashvless small icon (no large icon), the
-  selected route/latency, and a Disconnect action. Built-in Android UI punctuation is ASCII-only, and javac
+  `VpnSvc` publishes a live notification with a dedicated white-on-transparent PNG small icon (no large icon),
+  the selected route/latency, and a Disconnect action. Built-in Android UI punctuation is ASCII-only, and javac
   explicitly uses UTF-8 so server-provided names and source text are never decoded with the Windows code page.
   `VpnTileService` adds a quick-settings tile that starts/stops the VPN directly after Android's one-time VPN
   consent; consent opens MainActivity. Resource linking runs before javac and generates `R.java`.

@@ -42,7 +42,7 @@ Use `branding.Files` for direct embedded-filesystem access, `branding.Tokens()` 
 
 - installs `png/logo.png` as the transparent launcher icon;
 - packages `tokens.json` and `png/` under APK assets;
-- uses the shared shield shape for VPN notifications and the quick-settings tile;
+- uses `png/notification.png` (white-on-transparent) for VPN notifications and the shared shield vector for the quick-settings tile;
 - lets `MainActivity` load the shared colors and tintable navigation icons.
 
 For another native toolkit, copy `tokens.json` and either `icons/` or `png/`; no generation step is required.
