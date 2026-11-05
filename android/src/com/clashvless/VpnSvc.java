@@ -23,6 +23,8 @@ import java.io.OutputStream;
  */
 public class VpnSvc extends VpnService {
     static final String ACTION_START = "start", ACTION_STOP = "stop";
+    private static final int NOTIFICATION_ID = 1001;
+    private static final String CHANNEL_ID = "vpn_connection";
     static volatile boolean running;
     static volatile VpnSvc instance;
 
@@ -49,20 +51,35 @@ public class VpnSvc extends VpnService {
     }
 
     private void foreground() {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        manager.cancel(1);
         if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel channel = new NotificationChannel("vpn", "VPN connection", NotificationManager.IMPORTANCE_LOW);
+            NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "VPN connection", NotificationManager.IMPORTANCE_LOW);
             channel.setDescription("Current clashvless connection state and route");
             channel.setShowBadge(false);
-            getSystemService(NotificationManager.class).createNotificationChannel(channel);
+            manager.createNotificationChannel(channel);
         }
         Notification notification = buildNotification();
-        if (Build.VERSION.SDK_INT >= 34) startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
-        else startForeground(1, notification);
+        if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        else startForeground(NOTIFICATION_ID, notification);
+    }
+
+    private android.graphics.drawable.Icon notificationIcon() {
+        try (java.io.InputStream input = getAssets().open("branding/png/notification.png");
+             java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096];
+            for (int count; (count = input.read(buffer)) != -1; ) output.write(buffer, 0, count);
+            byte[] encoded = output.toByteArray();
+            return android.graphics.drawable.Icon.createWithData(encoded, 0, encoded.length);
+        } catch (Exception error) {
+            Core.log("Notification icon: " + error);
+            return android.graphics.drawable.Icon.createWithResource(getPackageName(), R.drawable.clashvless_notification);
+        }
     }
 
     private Notification buildNotification() {
         Notification.Builder builder = Build.VERSION.SDK_INT >= 26
-                ? new Notification.Builder(this, "vpn") : new Notification.Builder(this);
+                ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
         org.json.JSONObject status = Ctl.status;
         boolean online = status != null && status.optInt("Tier") > 0;
         String details = status == null ? "Preparing the local engine and VPN interface"
@@ -73,7 +90,7 @@ public class VpnSvc extends VpnService {
                 new Intent(this, VpnSvc.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return builder
-                .setSmallIcon(R.drawable.clashvless_notification)
+                .setSmallIcon(notificationIcon())
                 .setColor(0xFF68D5BD)
                 .setContentTitle(online ? "clashvless | Connected" : "clashvless | Connecting")
                 .setContentText(details)
@@ -88,7 +105,7 @@ public class VpnSvc extends VpnService {
     }
 
     private void updateNotification() {
-        getSystemService(NotificationManager.class).notify(1, buildNotification());
+        getSystemService(NotificationManager.class).notify(NOTIFICATION_ID, buildNotification());
     }
 
     private synchronized void startup() {
