@@ -64,19 +64,6 @@ public class VpnSvc extends VpnService {
         else startForeground(NOTIFICATION_ID, notification);
     }
 
-    private android.graphics.drawable.Icon notificationIcon() {
-        try (java.io.InputStream input = getAssets().open("branding/png/notification.png");
-             java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream()) {
-            byte[] buffer = new byte[4096];
-            for (int count; (count = input.read(buffer)) != -1; ) output.write(buffer, 0, count);
-            byte[] encoded = output.toByteArray();
-            return android.graphics.drawable.Icon.createWithData(encoded, 0, encoded.length);
-        } catch (Exception error) {
-            Core.log("Notification icon: " + error);
-            return android.graphics.drawable.Icon.createWithResource(getPackageName(), R.drawable.clashvless_notification);
-        }
-    }
-
     private Notification buildNotification() {
         Notification.Builder builder = Build.VERSION.SDK_INT >= 26
                 ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
@@ -90,7 +77,7 @@ public class VpnSvc extends VpnService {
                 new Intent(this, VpnSvc.class).setAction(ACTION_STOP),
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return builder
-                .setSmallIcon(notificationIcon())
+                .setSmallIcon(R.drawable.clashvless_notification)
                 .setColor(0xFF68D5BD)
                 .setContentTitle(online ? "clashvless | Connected" : "clashvless | Connecting")
                 .setContentText(details)

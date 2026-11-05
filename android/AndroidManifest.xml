@@ -10,7 +10,8 @@
 
     <application
         android:label="clashvless"
-        android:icon="@drawable/clashvless_logo"
+        android:icon="@mipmap/clashvless_launcher"
+        android:roundIcon="@mipmap/clashvless_launcher"
         android:extractNativeLibs="true"
         android:debuggable="true"
         android:theme="@android:style/Theme.Material.NoActionBar">
