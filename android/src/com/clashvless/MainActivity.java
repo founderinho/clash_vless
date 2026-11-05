@@ -22,7 +22,6 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.GridLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -339,24 +338,23 @@ public class MainActivity extends Activity {
 
     private void renderConfig(JSONObject st) {
         String[] names = {"Network", "VPN", "Exit routes", "Providers & nodes", "Updates", "Device"};
-        GridLayout sections = new GridLayout(this);
-        sections.setColumnCount(2);
-        for (int i = 0; i < names.length; i++) {
-            final int selected = i;
-            Button section = btn(names[i], i == configSection, () -> {
-                configSection = selected;
-                render();
-            });
-            section.setTextSize(13);
-            section.setGravity(Gravity.CENTER);
-            GridLayout.LayoutParams params = new GridLayout.LayoutParams();
-            params.width = 0;
-            params.height = dp(48);
-            params.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1, 1f);
-            params.setMargins(dp(2), dp(2), dp(2), dp(2));
-            sections.addView(section, params);
-        }
-        body.addView(sections);
+        LinearLayout sectionGroup = new LinearLayout(this);
+        sectionGroup.setOrientation(LinearLayout.VERTICAL);
+        sectionGroup.setPadding(dp(14), dp(10), dp(14), dp(12));
+        GradientDrawable groupBackground = round(Color.TRANSPARENT, 10);
+        groupBackground.setStroke(dp(1), Color.rgb(43, 53, 65));
+        sectionGroup.setBackground(groupBackground);
+        sectionGroup.addView(text("SETTINGS TYPE", 11, ACCENT, true));
+        sectionGroup.addView(text("Choose a category", 11, MUTED, false));
+        Button currentSection = btn(names[configSection] + "  >", false, () -> showConfigSections(names));
+        currentSection.setTextSize(14);
+        currentSection.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams currentParams = new LinearLayout.LayoutParams(-1, dp(48));
+        currentParams.setMargins(0, dp(8), 0, 0);
+        sectionGroup.addView(currentSection, currentParams);
+        LinearLayout.LayoutParams groupParams = new LinearLayout.LayoutParams(-1, -2);
+        groupParams.setMargins(0, 0, 0, dp(10));
+        body.addView(sectionGroup, groupParams);
 
         if (configSection == 0) {
             LinearLayout failover = card("Automatic failover", "Route selection, health checks, and recovery");
@@ -411,6 +409,71 @@ public class MainActivity extends Activity {
             }
             body.addView(identity);
         }
+    }
+
+    private void showConfigSections(String[] names) {
+        String[] descriptions = {
+                "Listeners, health checks, and failover",
+                "System-wide tunnel and interface",
+                "Failover slots and final VLESS exits",
+                "Subscriptions and entry-node selection",
+                "Background refresh and fetch proxy",
+                "Hardware ID and panel identity"
+        };
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(16), dp(8), dp(16), dp(20));
+        View handle = new View(this);
+        handle.setBackground(round(Color.rgb(67, 79, 92), 2));
+        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(36), dp(4));
+        handleParams.gravity = Gravity.CENTER_HORIZONTAL;
+        handleParams.setMargins(0, 0, 0, dp(10));
+        list.addView(handle, handleParams);
+        list.addView(text("Settings type", 20, TEXT, true));
+        list.addView(text("Choose what you want to configure", 12, MUTED, false));
+        list.addView(spacer(10));
+        AlertDialog dialog = new AlertDialog.Builder(this).setView(list).create();
+        for (int i = 0; i < names.length; i++) {
+            final int selected = i;
+            boolean active = i == configSection;
+            LinearLayout option = new LinearLayout(this);
+            option.setOrientation(LinearLayout.HORIZONTAL);
+            option.setGravity(Gravity.CENTER_VERTICAL);
+            option.setPadding(dp(14), dp(8), dp(14), dp(8));
+            option.setMinimumHeight(dp(58));
+            GradientDrawable optionBackground = round(active ? Color.rgb(27, 37, 44) : Color.TRANSPARENT, 8);
+            option.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3368d5bd), optionBackground, round(Color.WHITE, 8)));
+            LinearLayout labels = new LinearLayout(this);
+            labels.setOrientation(LinearLayout.VERTICAL);
+            labels.addView(text(names[i], 14, active ? ACCENT : TEXT, true));
+            labels.addView(text(descriptions[i], 11, MUTED, false));
+            option.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+            if (active) option.addView(text("CURRENT", 10, ACCENT, true));
+            option.setOnClickListener(view -> {
+                dialog.dismiss();
+                configSection = selected;
+                render();
+            });
+            LinearLayout.LayoutParams optionParams = new LinearLayout.LayoutParams(-1, -2);
+            optionParams.setMargins(0, dp(2), 0, dp(2));
+            list.addView(option, optionParams);
+        }
+        dialog.show();
+        android.view.Window window = dialog.getWindow();
+        if (window != null) {
+            GradientDrawable sheetBackground = round(CARD, 0);
+            sheetBackground.setCornerRadii(new float[]{dp(18), dp(18), dp(18), dp(18), 0, 0, 0, 0});
+            window.setBackgroundDrawable(sheetBackground);
+            window.setLayout(-1, -2);
+            window.setGravity(Gravity.BOTTOM);
+            View sheet = window.getDecorView();
+            sheet.post(() -> {
+                sheet.setTranslationY(sheet.getHeight());
+                sheet.animate().translationY(0).setDuration(240)
+                        .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+            });
+        }
+    }
     }
 
     private void toggleVpn() {

@@ -94,8 +94,10 @@ or a **system-wide TUN** — with automatic tiered failover.
   **Overview**, and **Log**. All three are page switches; Overview contains connection metrics, route,
   endpoints, and pools. An enlarged native switch in the header controls the VPN and displays
   Disconnected/Connecting/Connected in a fixed-width, single-line label that cannot clip the final letters. Settings uses
-  a two-column grid of always-visible section buttons for network, VPN, routes, providers/nodes, updates, and device
-  identity, retaining all former controls (including HWID and slot/main management).
+  a bordered **Settings type** group with a branded bottom sheet: the full-width list slides up from the bottom, and
+  every category has a description and a clear current state, keeping category selection visually separate from the
+  settings themselves. All former controls remain
+  (including HWID and slot/main management).
   `VpnSvc` publishes a live notification with the canonical resource-ID overload of `setSmallIcon`, using a dedicated
   white-on-transparent drawable. The application icon is a separate legacy mipmap plus an Android 8+ adaptive icon
   (including monochrome), so OEM notification rows that substitute the application icon do not depend on the small
