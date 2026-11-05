@@ -25,6 +25,18 @@ func TestSharedAssets(t *testing.T) {
 	if _, _, _, alpha := image.At(0, 0).RGBA(); alpha != 0 {
 		t.Fatal("launcher logo must have transparent corners")
 	}
+	bounds := image.Bounds()
+	visible := 0
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if _, _, _, alpha := image.At(x, y).RGBA(); alpha > 0x8000 {
+				visible++
+			}
+		}
+	}
+	if visible*4 < bounds.Dx()*bounds.Dy() {
+		t.Fatalf("launcher logo is mostly blank: %d visible pixels", visible)
+	}
 	windowsIcon, err := Files.ReadFile("windows/clashvless.ico")
 	if err != nil || len(windowsIcon) < 6 || windowsIcon[4] != 7 {
 		t.Fatalf("multi-resolution Windows icon: %v", err)

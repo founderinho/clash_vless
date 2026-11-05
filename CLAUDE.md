@@ -7,6 +7,8 @@ or a **system-wide TUN** — with automatic tiered failover.
 ## Layout
 - `app/` — the Go module (`module clashvless`, Go 1.26). All source lives here.
   - `main.go` — CLI entrypoint + command dispatch.
+  - `branding/` — shared transparent vector/raster logo, icons, and color tokens. The Windows ICO contains
+    seven raster sizes; `app/icon_windows_amd64.syso` embeds it into Explorer/launcher resources.
   - `internal/store` — on-disk state (subs, cached nodes, **slots** = per-port failover pools of mains,
     stable device identity, tunables).
   - `internal/happ` — fetches a Remnawave sub (Happ 3.x mimic; optional SOCKS5 fetch proxy); parses
