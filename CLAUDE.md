@@ -386,6 +386,11 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
   connection's dest to the sniffed host, which **silently hijacks an app's HTTP `CONNECT`** (e.g. an app
   wiring its own HTTP proxy through our SOCKS/TUN: the `CONNECT proxytarget` is sniffed and rerouted to
   the target, bypassing the proxy → hang). Plain HTTPS is unaffected (TLS sniffs to the same SNI host).
+- **SOCKS5 UDP relay addresses are per-connection.** `socksInbound` deliberately leaves `settings.ip`
+  unset. Xray then answers UDP ASSOCIATE with the local address of that client's TCP connection:
+  loopback clients keep receiving `127.0.0.1`/`::1`, while LAN and container clients receive the
+  interface address they connected to. This also works with a wildcard listener; never restore a global
+  hard-coded relay address.
 - Keep code comments minimal: only a line for a constraint the code itself can't show.
 
 ## Doc rule (IMPORTANT)

@@ -321,7 +321,7 @@ func socksInbound(tag string, port int, listen string) map[string]any {
 		"listen":   listen,
 		"port":     port,
 		"protocol": "socks",
-		"settings": map[string]any{"auth": "noauth", "udp": true, "ip": "127.0.0.1"},
+		"settings": map[string]any{"auth": "noauth", "udp": true},
 		"sniffing": map[string]any{"enabled": true, "destOverride": []any{"http", "tls", "quic"}, "routeOnly": true},
 	}
 }
