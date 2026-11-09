@@ -57,15 +57,23 @@ or a **system-wide TUN** — with automatic tiered failover.
     printing PASS/FAIL. Proves why chaining uses dialerProxy; re-run after any xray-core bump.
   - `cmd/tunprobe` — root/admin-only lab: starts JUST the TUN bridge, confirms xray creates the device,
     then tears down **without touching routing** (safe). Answers "does the native tun inbound work here?".
-- `app/vendor/` — vendored deps (committed; builds are hermetic/offline). Holds **three local patches**
+- `app/vendor/` — vendored deps (committed; builds are hermetic/offline). Holds **four local patches**
   (grep `clashvless`): (1) gVisor `network/ipv4` echo-reply gate for TUN ping — see **ICMP ping**; (2)
   `transport/internet/grpc/dial.go` **content-keys** the global gRPC client-conn cache. It was keyed by the
   `*MemoryStreamConfig` **pointer**, so each failover probe (a fresh throwaway instance → fresh pointer) missed
   the cache and stored a **new, never-closed `grpc.ClientConn`** (+ its goroutines) into an insert-only global
   map → ~2 GB/day leak with gRPC entry nodes. The patch hashes dest+transport+security+socket settings so all
-  probes/live dials to one node share **one bounded** conn. (3) xray `common/log` + `app/log` support an optional
+  probes/live dials to one node share **one bounded** conn. (3) `proxy/tun/udp_fullcone.go` — backport of
+  upstream xray-core #5888/#6285/#6814 (landed after our v26.3.27): a TUN UDP flow is keyed by **source**
+  addr:port, but only the first packet's destination was kept, so every later packet from that source went to
+  the **first** peer. An app reusing a source port for a new peer (NTP's fixed `:123`, STUN, DNS, Moonlight) got
+  the old peer's reply under the wrong source and silently timed out, while a fresh-socket SOCKS UDP test of the
+  same exit passed. Now each packet carries its own destination (`b.UDP`), a domain `b.UDP` reply falls back to
+  the flow target, a finished flow can't evict its successor, and packets queue under the lock (no
+  send-on-closed panic). (4) xray `common/log` + `app/log` support an optional
   observer after per-instance severity filtering, so the app receives structured xray records without duplicate
-  console output. Re-apply **all three** after any re-vendor.
+  console output. Re-apply **all four** after any re-vendor. Upstream later replaced gVisor in the tun
+  inbound with its own stack (2026-10), so a real xray-core bump must re-check (1) and (3), not just re-apply.
 - `android/` — **Android app** (minimal UX, core only). No Gradle: `android/build.sh` does
   go → javac → d8 → aapt2 → zipalign → apksigner into `dist/clashvless.apk`. **minSdk 24** (Android 7; API-26
   calls are version-guarded), target 34. ABIs: **arm64** + **armeabi-v7a** + **x86_64** (for emulator tests), all built
