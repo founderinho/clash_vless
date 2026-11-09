@@ -22,12 +22,16 @@ import (
 	"clashvless/internal/control"
 	"clashvless/internal/engine"
 	"clashvless/internal/happ"
+	"clashvless/internal/loghub"
 	"clashvless/internal/store"
 	"clashvless/internal/xray"
 )
 
 type statusMsg engine.Status
-type logMsg string
+type logMsg struct {
+	line  string
+	debug bool
+}
 type stateMsg json.RawMessage
 type daemonGoneMsg struct{}
 type spinTickMsg struct{}
@@ -81,7 +85,6 @@ type model struct {
 	inputMode   int
 	inputBuf    string
 	busy        string
-	subErr      map[string]string // per-sub last fetch error (transient), keyed by URL
 
 	// first-run setup wizard (see wizard.go)
 	wiz        int
@@ -100,7 +103,7 @@ type model struct {
 // renders state/status/log pushed by the daemon and sends commands back. embedded
 // records whether the caller started the daemon in-process (vs a standalone `run`).
 func RunClient(client *control.Client, embedded bool) error {
-	m := &model{client: client, embedded: embedded, subErr: map[string]string{}, expanded: map[int]bool{}}
+	m := &model{client: client, embedded: embedded, expanded: map[int]bool{}}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	go func() {
 		for e := range client.Events() {
@@ -110,7 +113,7 @@ func RunClient(client *control.Client, embedded bool) error {
 					p.Send(statusMsg(*e.Status))
 				}
 			case "log":
-				p.Send(logMsg(e.Line))
+				p.Send(logMsg{e.Line, e.Record != nil && e.Record.Level == loghub.Debug})
 			case "state":
 				p.Send(stateMsg(e.State))
 			}
@@ -142,11 +145,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinFrame++
 		return m, spinTick()
 	case logMsg:
-		m.logs = append(m.logs, string(msg))
+		// Debug records list every destination visited: opt-in only.
+		if msg.debug && (m.st == nil || m.st.Loglevel() != "debug") {
+			return m, nil
+		}
+		m.logs = append(m.logs, msg.line)
 		if len(m.logs) > 500 {
 			m.logs = m.logs[len(m.logs)-500:]
 		}
-		m.captureSubErr(string(msg))
 	case stateMsg:
 		var st store.State
 		if json.Unmarshal([]byte(msg), &st) == nil {
@@ -166,12 +172,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // --- key handling ------------------------------------------------------------
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if !m.inTextInput() {
+	switch {
+	case !m.inTextInput():
 		if m.inKeyBurst(msg, time.Now()) {
 			m.busy = "pasted text ignored — press a to add a main first"
 			return m, nil
 		}
 		msg = latinKey(msg)
+	case msg.Type == tea.KeyCtrlV || (msg.Type == tea.KeyInsert && !msg.Alt):
+		// The classic Windows console delivers these keys instead of pasting.
+		text := []rune(sanitizeURL(readClipboard()))
+		if len(text) == 0 {
+			return m, nil
+		}
+		msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: text}
 	}
 	// "exit? y/n" prompt takes over the whole UI once armed.
 	if m.confirmExit {
@@ -257,7 +271,7 @@ func (m *model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.apply(func(st *store.State) { st.AddSlot(name) })
 			m.busy = "slot added"
 		case inputSlotPort:
-			if v, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && v >= 1024 && v <= 65535 {
+			if v, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && v >= 1024 && v <= 65534 {
 				s := m.portSlot
 				m.apply(func(st *store.State) {
 					if s >= 0 && s < len(st.Slots) {
@@ -266,7 +280,7 @@ func (m *model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				})
 				m.busy = "port set — restart the daemon to apply"
 			} else {
-				m.busy = "invalid port (1024–65535)"
+				m.busy = "invalid port (1024–65534)"
 			}
 		case inputEditCfg:
 			if v, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
@@ -362,18 +376,6 @@ func (m *model) inTextInput() bool {
 		return true
 	}
 	return false
-}
-
-// captureSubErr records a failed-fetch reason from the daemon's log ("add <url>:
-// <err>") so it can be shown next to the sub (Subs tab + setup wizard).
-func (m *model) captureSubErr(line string) {
-	rest, ok := strings.CutPrefix(line, "add ")
-	if !ok {
-		return
-	}
-	if i := strings.Index(rest, ": "); i > 0 {
-		m.subErr[rest[:i]] = rest[i+2:]
-	}
 }
 
 func (m *model) handleSubsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -563,7 +565,7 @@ var cfgFields = []cfgField{
 	{"TUN LAN bypass", func(st *store.State) int { return b2i(st.TunBypassLAN()) }, func(st *store.State, v int) { st.TunTunnelLAN = v == 0 }, 0, 1, onOff, "keep private/LAN IPs off the tunnel — local-only resources (intranet, NAS) stay reachable"},
 	{"TUN block IPv6", func(st *store.State) int { return b2i(st.TunBlockIPv6()) }, func(st *store.State, v int) { st.TunAllowIPv6 = v == 0 }, 0, 1, onOff, "block global IPv6 so it can't leak past the IPv4-only tunnel (apps fall back to v4)"},
 	{"TUN ICMP ping", func(st *store.State) int { return b2i(st.TunICMP()) }, func(st *store.State, v int) { st.TunNoICMP = v == 0 }, 0, 1, onOff, "answer ping locally so ping works under TUN — device liveness only (ICMP can't cross the tunnel; use curl for the exit)"},
-	{"Listen port", func(st *store.State) int { return st.ListenPort }, func(st *store.State, v int) { st.ListenPort = v }, 1024, 65535, nil, "restart to apply"},
+	{"Listen port", func(st *store.State) int { return st.ListenPort }, func(st *store.State, v int) { st.ListenPort = v }, 1024, 65534, nil, "restart to apply"},
 	{"Allow LAN (0.0.0.0)", func(st *store.State) int {
 		if st.ListenHost() == "127.0.0.1" {
 			return 0
@@ -730,7 +732,7 @@ func (m *model) statusView() string {
 		conn += "\n" + sw + dimStyle.Render("  (link busy)")
 	}
 	if s.TunErr != "" {
-		conn += "\n" + badStyle.Render(s.TunErr)
+		conn += "\n" + badStyle.Render("VPN isn't running, traffic is NOT protected. Retrying. "+s.TunErr)
 	}
 	// One line per enabled slot: its local SOCKS port + live tier (◉ = TUN slot).
 	ssByName := map[string]engine.SlotStatus{}
@@ -889,8 +891,8 @@ func (m *model) sweepLabel() string {
 
 func (m *model) subStatus(sb *store.Subscription) string {
 	switch {
-	case len(sb.Nodes) == 0 && m.subErr[sb.URL] != "":
-		return badStyle.Render(m.subErr[sb.URL])
+	case sb.FetchErr != "":
+		return badStyle.Render("fetch failed: " + sb.FetchErr)
 	case len(sb.Nodes) == 0:
 		return dimStyle.Render("not fetched — press ") + keyStyle.Render("r")
 	}

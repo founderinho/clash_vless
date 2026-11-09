@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -175,10 +176,12 @@ func (s *Server) addSub(url string) {
 	nodes, title, err := happ.Fetch(st.Device, url, st.FetchProxyAddr())
 	s.applyAndBroadcast(func(st *store.State) {
 		st.AddSub(title, url)
+		sb := &st.Subs[len(st.Subs)-1]
 		if err == nil {
-			sb := &st.Subs[len(st.Subs)-1]
 			sb.Nodes = nodes
 			sb.LastFetch = time.Now()
+		} else {
+			sb.FetchErr = fetchError(err, url)
 		}
 	})
 	if err != nil {
@@ -205,11 +208,11 @@ func (s *Server) refetch() {
 	}
 	s.applyAndBroadcast(func(st *store.State) {
 		for _, u := range ups {
-			if !u.ok {
-				continue
-			}
 			for i := range st.Subs {
-				if st.Subs[i].URL == u.url {
+				if st.Subs[i].URL == u.url && !u.ok {
+					st.Subs[i].FetchErr = fetchError(u.err, u.url)
+				} else if st.Subs[i].URL == u.url {
+					st.Subs[i].FetchErr = ""
 					st.Subs[i].Nodes = u.nodes
 					st.Subs[i].LastFetch = time.Now()
 					if u.title != "" {
@@ -226,13 +229,21 @@ func (s *Server) refetch() {
 		if u.ok {
 			name := u.title
 			if name == "" {
-				name = u.url
+				name = subHost(u.url)
 			}
 			s.sup.Logf(loghub.Info, "subscription", "fetch", "refreshed %q — %d nodes", name, len(u.nodes))
 		} else {
 			s.sup.Logf(loghub.Error, "subscription", "fetch", "refresh failed: %s", fetchError(u.err, u.url))
 		}
 	}
+}
+
+// subHost names an untitled subscription in logs: its path and query hold the token.
+func subHost(subscriptionURL string) string {
+	if parsed, err := url.Parse(subscriptionURL); err == nil && parsed.Host != "" {
+		return parsed.Host
+	}
+	return "<subscription URL>"
 }
 
 func fetchError(err error, subscriptionURL string) string {

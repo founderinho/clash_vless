@@ -238,6 +238,8 @@ func keyType(e coninput.KeyEventRecord) KeyType {
 	ctrlPressed := e.ControlKeyState.Contains(coninput.LEFT_CTRL_PRESSED | coninput.RIGHT_CTRL_PRESSED)
 
 	switch code { //nolint:exhaustive
+	case coninput.VK_INSERT: // clashvless: unmapped upstream, so Shift+Insert paste never arrived
+		return KeyInsert
 	case coninput.VK_RETURN:
 		return KeyEnter
 	case coninput.VK_BACK:

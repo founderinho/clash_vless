@@ -63,24 +63,22 @@ func (r Record) String() string {
 
 // ParseLine keeps clients compatible with pre-structured daemons.
 func ParseLine(line string) Record {
-	parts := strings.SplitN(line, " ", 4)
-	if len(parts) == 4 {
-		if at, err := time.ParseInLocation("15:04:05.000", parts[0], time.Local); err == nil {
-			origin, message, ok := strings.Cut(parts[3], " ")
-			if ok {
-				module, element, _ := strings.Cut(origin, "/")
-				level := Info
-				switch parts[1] {
-				case "WARN":
-					level = Warning
-				case "ERROR":
-					level = Error
-				case "DEBUG":
-					level = Debug
-				}
-				return Record{Time: at, Level: level, Module: module, Element: element, Message: message}
-			}
+	// The level is padded to 5 columns, so the gap before the origin varies.
+	stamp, rest, _ := strings.Cut(line, " ")
+	label, rest, _ := strings.Cut(rest, " ")
+	origin, message, ok := strings.Cut(strings.TrimLeft(rest, " "), " ")
+	if at, err := time.ParseInLocation("15:04:05.000", stamp, time.Local); err == nil && ok {
+		level := Info
+		switch label {
+		case "WARN":
+			level = Warning
+		case "ERROR":
+			level = Error
+		case "DEBUG":
+			level = Debug
 		}
+		module, element, _ := strings.Cut(origin, "/")
+		return Record{Time: at, Level: level, Module: module, Element: element, Message: message}
 	}
 	return New(Info, "engine", "", "%s", line)
 }

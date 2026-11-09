@@ -1,4 +1,4 @@
-//go:build !android
+//go:build !android && cgo
 
 package gui
 
@@ -27,6 +27,10 @@ import (
 )
 
 type dashboard struct {
+	logRefresh      func() // re-filters the Activity list; only valid while that page is shown
+	scroll          *container.Scroll
+	scrollPage      string
+	inputs          map[string]*widget.Entry
 	app             fyne.App
 	window          fyne.Window
 	client          *control.Client
@@ -51,12 +55,12 @@ func RunClient(client *control.Client, embedded bool) error {
 	w := a.NewWindow("Clashvless")
 	w.SetIcon(logoResource())
 	w.SetPadded(false)
-	w.Resize(fyne.NewSize(900, 640))
+	w.Resize(fitScreen(fyne.NewSize(900, 640)))
 	w.CenterOnScreen()
 	d := &dashboard{
 		app: a, window: w, client: client, embedded: embedded,
 		page: "overview", settingsSection: "Network & failover", nav: map[string]*widget.Button{},
-		logFilter: loghub.DefaultFilter(),
+		logFilter: loghub.DefaultFilter(), inputs: map[string]*widget.Entry{},
 	}
 	d.buildShell()
 	go d.readEvents()
@@ -91,8 +95,8 @@ func (d *dashboard) readEvents() {
 				if len(d.logs) > 2000 {
 					d.logs = d.logs[len(d.logs)-2000:]
 				}
-				if d.page == "activity" && d.logList != nil {
-					d.logList.Refresh()
+				if d.page == "activity" && d.logRefresh != nil {
+					d.logRefresh()
 					d.logList.ScrollToBottom()
 				}
 			}
@@ -160,6 +164,14 @@ func (d *dashboard) render() {
 	if d.state == nil {
 		return
 	}
+	prevScroll, prevPage := d.scroll, d.scrollPage
+	focused := ""
+	for key, entry := range d.inputs {
+		if d.window.Canvas().Focused() == entry {
+			focused = key
+		}
+	}
+	d.inputs = map[string]*widget.Entry{}
 	for name, button := range d.nav {
 		button.Importance = widget.LowImportance
 		if name == d.page {
@@ -198,6 +210,25 @@ func (d *dashboard) render() {
 	scroll := container.NewVScroll(inset(body, 12, 16, 16, 16))
 	d.content.Objects = []fyne.CanvasObject{container.NewBorder(header, nil, nil, nil, scroll)}
 	d.content.Refresh()
+	if d.page == prevPage && prevScroll != nil {
+		scroll.ScrollToOffset(prevScroll.Offset)
+	}
+	d.scroll, d.scrollPage = scroll, d.page
+	if entry := d.inputs[focused]; entry != nil {
+		entry.CursorColumn = len([]rune(entry.Text))
+		d.window.Canvas().Focus(entry)
+	}
+}
+
+// textInput is an entry that survives render(), which rebuilds the page on every
+// status event: changed must store the text so the next build can restore it.
+func (d *dashboard) textInput(key, placeholder, text string, changed func(string)) *widget.Entry {
+	entry := widget.NewEntry()
+	entry.SetPlaceHolder(placeholder)
+	entry.SetText(text)
+	entry.OnChanged = changed
+	d.inputs[key] = entry
+	return entry
 }
 
 func (d *dashboard) command(cmd control.Command, message string) {
@@ -290,28 +321,20 @@ func (d *dashboard) addSlot() {
 		data, _ := json.Marshal(d.state.Slots)
 		var slots []store.Slot
 		_ = json.Unmarshal(data, &slots)
-		slots = append(slots, store.Slot{Name: name, Port: d.freePort(), Enabled: true})
+		slots = append(slots, store.Slot{Name: name, Port: d.state.FreeSlotPort(), Enabled: true})
 		d.patch(map[string]any{"slots": slots})
 	})
 }
 
-func (d *dashboard) freePort() int {
-	used := map[int]bool{d.state.ListenPort: true, d.state.ListenPort + 1: true}
-	for _, slot := range d.state.Slots {
-		used[slot.Port], used[slot.Port+1] = true, true
-	}
-	for port := d.state.ListenPort + 2; port < 65535; port++ {
-		if !used[port] && !used[port+1] {
-			return port
-		}
-	}
-	return 0
-}
-
 func (d *dashboard) removeMain(slotIndex, mainIndex int) {
-	name := d.state.Slots[slotIndex].Mains[mainIndex].Name
+	slotName, name := d.state.Slots[slotIndex].Name, d.state.Slots[slotIndex].Mains[mainIndex].Name
 	d.confirm("Delete exit", "Remove "+name+" from this failover slot?", func() {
-		d.updateSlots(func(slots []store.Slot) { slots[slotIndex].RemoveMain(mainIndex) })
+		d.updateSlots(func(slots []store.Slot) {
+			// Another client may have changed the slots while this dialog was open.
+			if slotIndex < len(slots) && slots[slotIndex].Name == slotName && mainIndex < len(slots[slotIndex].Mains) && slots[slotIndex].Mains[mainIndex].Name == name {
+				slots[slotIndex].RemoveMain(mainIndex)
+			}
+		})
 	})
 }
 

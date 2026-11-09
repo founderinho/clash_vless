@@ -50,6 +50,9 @@ func newInputReader(r io.Reader, enableMouse bool) (cancelreader.CancelReader, e
 	// Otherwise, mouse events will be enabled all the time.
 	if enableMouse {
 		modes = append(modes, windows.ENABLE_MOUSE_INPUT)
+	} else {
+		// clashvless: keep QuickEdit, or right-click paste dies in the classic console.
+		modes = append(modes, windows.ENABLE_QUICK_EDIT_MODE)
 	}
 
 	originalMode, err := prepareConsole(conin, modes...)

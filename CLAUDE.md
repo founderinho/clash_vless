@@ -11,7 +11,9 @@ or a **system-wide TUN** — with automatic tiered failover.
     seven raster sizes; `app/icon_windows_amd64.syso` embeds it into Explorer/launcher resources.
   - `internal/store` — on-disk state (subs, cached nodes, **slots** = per-port failover pools of mains,
     stable device identity, tunables).
-  - `internal/gui` — native Fyne desktop GUI. Its connection control is a clickable, pointer-cursor switch with the
+  - `internal/gui` — native Fyne desktop GUI. `render()` rebuilds the page on every status event, so it restores the
+    scroll offset and the focused `textInput`; anything typed must be stored by its `changed` callback or it's lost.
+    `connectionSummary` says "Connected" only when `Status.TunUp` is true: a working SOCKS route says nothing about the VPN. Its connection control is a clickable, pointer-cursor switch with the
     same track/thumb shape and state colors as Android, rather than a drag-only slider. Activity is a virtualized,
     2000-record view with severity/module/text filters (` & ` AND, ` | ` OR), presets, and click-to-copy.
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
@@ -46,6 +48,10 @@ or a **system-wide TUN** — with automatic tiered failover.
     drops key bursts (`inKeyBurst`, gaps under `keyBurstGap`). Windows delivers a paste key by key with no paste
     marker, so a `vless://` pasted outside text input used to run as shortcuts: `e` toggled the slot off and `s`
     opened "add slot", naming a junk slot after the rest of the URL. Slot names containing `://` are also rejected.
+    In text input, Ctrl+V and Insert read the clipboard (`readClipboard`, Windows only): the classic console delivers
+    those keys instead of pasting. Debug records list every destination visited, so the Log tab and `run`'s stdout hide
+    them unless `log_level` is `debug`; GUI clients keep them behind their own DEBUG filter. Fetch failures come from
+    `Subscription.FetchErr` (`fetch_err`, token-free), set by the daemon and shown by all three clients.
   - `internal/tun` — TUN mode OS layer (Linux `ip`/`resolvectl`, Windows `netsh`/`route`, macOS
     `route`/`networksetup`; stub on other OSes). Moves the default route onto the device and keeps **xray's
     own sockets off the tunnel** so the live exit AND the failover probes reach servers directly — on Linux
@@ -82,6 +88,8 @@ or a **system-wide TUN** — with automatic tiered failover.
   console output. (5) bubbletea `key_windows.go` emits the char carried on an Alt **key-up**: for a char missing
   from the active layout (`@ & #` on Russian) the Windows console synthesizes Alt+numpad and delivers it only there,
   and bubbletea dropped all key-ups, so a pasted `vless://` lost its `@`/`&` and "add main" failed as an invalid URL.
+  The same file maps `VK_INSERT` (unmapped upstream), and `inputreader_windows.go` keeps QuickEdit on so right-click
+  paste works in the classic console.
   Re-apply **all five** after any re-vendor. Upstream later replaced gVisor in the tun
   inbound with its own stack (2026-10), so a real xray-core bump must re-check (1) and (3), not just re-apply.
 - `android/` — **Android app** (minimal UX, core only). No Gradle: `android/build.sh` does
@@ -143,15 +151,17 @@ or a **system-wide TUN** — with automatic tiered failover.
 go -C app build -o ../dist/clashvless .     # build the single binary
 go -C app run . [command]                   # run from source
 go -C app build ./...                        # compile-check every package
-android/build.sh                             # → dist/clashvless.apk (needs $ANDROID_HOME: platforms;android-34 + build-tools;34.0.0)
+android/build.sh                             # → dist/clashvless.apk (needs $ANDROID_HOME: platforms;android-34 + build-tools;35.0.0; 34.0.0 d8 crashes on MainActivity)
 ```
 The GUI toolkit needs cgo, so cross-compiling for Windows takes mingw:
 `GOOS=windows CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ go -C app build -o ../dist/clashvless.exe .`
-It also needs OpenGL at runtime. `gui.Preflight` (`preflight_windows.go`) runs GLFW's own pixel-format filter before
+`internal/gui` builds only with cgo, so `CGO_ENABLED=0` gives a working TUI/CLI binary for any desktop OS (the way to
+build macOS off a Mac), and bare `clashvless` then opens the TUI, as it does with no display on Linux; a dead X forward
+makes the toolkit panic, which `runGUI` turns into an error. It also needs OpenGL at runtime. `gui.Preflight` (`preflight_windows.go`) runs GLFW's own pixel-format filter before
 the daemon starts and shows an error box if nothing qualifies, because the release build has no console and the
 toolkit's error would be invisible. A failed query lets the toolkit try anyway, so it can't block a working machine.
-To test the GUI in VirtualBox, turn on 3D acceleration and use a display taller than the 640px window: on a shorter
-one the top is cut off and clicks land about 49px off.
+To test the GUI in VirtualBox, turn on 3D acceleration. `fitScreen` shrinks the window to the work area: a window taller
+than the screen gets clamped by Windows behind the toolkit's back, which cuts off the top and shifts every click.
 
 `run` starts the blocking daemon; `tui`/`status` attach to it as clients — but `tui` now **self-starts
 an in-process daemon** if none is running (stops when the TUI exits), so a fresh install needs no shell:
@@ -301,6 +311,11 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
   regardless. Main table stays clean (no per-server `/32`s). Windows/macOS lack both, so they bypass by
   explicit per-server routes instead (`tun.UplinkDevice()` returns `""` there). The exit's own domain
   resolves locally via injected `dns.hosts` (also from `SetTunMode`, needs `app/dns`) so bootstrap doesn't loop.
+  - **Bring-up retries** (`tunUpOrLatch`, `tunRetryGap`): a failed bring-up retries every 20s instead of latching until
+    toggled, because it can be transient: right after a crash Windows refuses to recreate the Wintun adapter for about a
+    minute (`Cannot create a file when that file already exists`). `Status.TunUp` reports real capture while that happens:
+    `TunEnabled` is only the wish, and traffic goes out directly until TUN is up, so clients must not show "Connected".
+    Embedded daemons wait for `Supervisor.Run` on exit (`startEmbeddedDaemon`'s stop func) so routes and DNS get restored.
   - **Route re-assert watchdog** (`tun.Manager.Reassert`/`osReassert`, `engine.syncTun`→`tunReassert`): a
     network event (DHCP renew, Wi-Fi bounce, sleep/wake) can wipe the `0/1`+`128/1` capture halves out from
     under us — the tun device stays up but the default falls back to the real uplink, so traffic **silently
@@ -350,7 +365,7 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
       than through a not-yet-up tunnel (the bootstrap deadlock). Has **no public default** — it adopts the
       **real local network's resolver** (`tun.SystemResolver()`), because a public default like `8.8.8.8` is
       often firewalled on a corporate LAN and a LAN resolver is unreachable through the exit. `SystemResolver()`
-      is **clobber-immune**: it reads the uplink's **DHCP lease** first (`currentDHCPResolver` — macOS `ipconfig
+      is **clobber-immune**: it reads the uplink's **DHCP lease** first (`currentDHCPResolver` — Windows `GetAdaptersAddresses`, macOS `ipconfig
       getpacket <dev>`, Linux `resolvectl dns <dev>`) and only falls back to `/etc/resolv.conf`/`resolvectl`.
       Without this it read the resolv.conf **we already overwrote** with our own injected resolver when the DNS
       mode was toggled while TUN was up — so real-net would re-adopt e.g. `8.8.8.8` and label it "your LAN
@@ -376,7 +391,7 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
     per OS (like the fwmark-vs-route bypass split): **Linux** adds `ip -6 route add unreachable 2000::/3`;
     **macOS** runs `networksetup -setv6off <uplink service>` (reliable across versions; the reject-inet6-route
     syntax isn't) and restores `-setv6automatic` on `osDown`; **Windows** routes the range into the tun
-    (best-effort, untested). `tun allow` leaves v6 alone.
+    (`store=active`, so it can't outlive an unclean exit). `tun allow` leaves v6 alone.
   - **LAN bypass** (`store.TunBypassLAN()`, default **on**; `TunTunnelLAN`=false; toggle `tun lan bypass|tunnel`,
     Config-tab **TUN LAN bypass**): keeps private/local ranges **off the tunnel** so LAN-only resources (corp
     intranet, printers, NAS, a router UI) stay reachable — without it the whole default route goes to the exit,
@@ -400,8 +415,7 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
     routed into the tun (blocked or off-tun). ⚠️ Being a vendored patch, it is **wiped by any `go mod vendor`
     / xray-core+gVisor bump — re-apply both files afterward** (like `cmd/xhprobe` re-validation).
   Linux and macOS
-  are tested and working; **Windows is code-complete but author-untested** (needs `wintun.dll` beside the
-  exe). macOS uses a kernel-named `utunN` device and per-service DNS.
+  are tested and working, and so is Windows, tested on 10 1909 (needs `wintun.dll` beside the exe). macOS uses a kernel-named `utunN` device and per-service DNS.
 - **What can be hopped** (see README matrix + `cmd/xhprobe` lab): a **plain** main (`security=none`,
   e.g. `plain-444`) hops through **any** entry. A main with **its own REALITY** (xhttp / tcp-reality)
   can only hop through a **non-Vision** entry — a Vision entry splices/pads the stream and mangles the
@@ -422,6 +436,11 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
   **24h**; a never-fetched sub has a zero time so it always qualifies) — cheap, and self-healing since a
   box offline for days refetches shortly after start. Toggle + interval live in the Config tab
   (**Auto-fetch subs** / **Auto-fetch every (h)**); `NoAutoFetch` is inverse so the zero value is ON.
+- **Listen address**: new installs write `listen_addr: 127.0.0.1`. An older document with it empty meant LAN-reachable,
+  so `Load` rewrites it to `0.0.0.0` on upgrade rather than silently cutting those devices off. On Windows that listener
+  raises a one-time firewall prompt per binary; Android pins loopback in `platformInit`.
+- **Log secrets**: nothing logged may hold a sub URL or an exit UUID. An untitled sub logs by host (`subHost`), a bad main's
+  parse error goes through `vlessURLPattern` and is reported once (`badExitLogged`), not on every cycle.
 - **State**: `$XDG_CONFIG_HOME/clash_vless/state.json`, written atomically at 0600 (it holds
   sub tokens + HWID). Lives **outside** the repo — never commit it.
 

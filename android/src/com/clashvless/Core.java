@@ -33,14 +33,12 @@ final class Core {
         Entry(String line) {
             this.line = line;
             String level = "INFO", module = "engine";
-            String[] parts = line.split(" ", 4);
+            // The level is padded to 5 columns, so the gap before the origin varies.
+            String[] parts = line.split(" +", 4);
             if (parts.length == 4 && parts[0].length() == 12
                     && Arrays.asList("INFO", "WARN", "ERROR", "DEBUG").contains(parts[1])) {
-                String[] body = parts[3].split(" ", 2);
-                if (body.length == 2) {
-                    level = parts[1];
-                    module = body[0].split("/", 2)[0];
-                }
+                level = parts[1];
+                module = parts[2].split("/", 2)[0];
             }
             this.level = level;
             this.module = module;

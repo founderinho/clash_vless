@@ -159,7 +159,7 @@ func run(args []string) error {
 		return cmdStatus(st)
 
 	case "gui", "":
-		return runGUI(st)
+		return runGUI(st, len(args) == 0)
 
 	case "tui":
 		return runTUI(st)
@@ -282,7 +282,14 @@ func cmdRun(st *store.State, debug bool) error {
 	}
 
 	hub := control.NewHub()
-	sink := func(record loghub.Record) { fmt.Println(record.String()) }
+	// Debug records list every destination visited, so stdout (often a journal) skips
+	// them unless asked for; clients still receive them for their own opt-in filter.
+	showDebug := st.Loglevel() == "debug"
+	sink := func(record loghub.Record) {
+		if record.Level != loghub.Debug || showDebug {
+			fmt.Println(record.String())
+		}
+	}
 	if debug {
 		sink = engine.EventFileSink(st.EventsLogPath(), sink)
 		fmt.Println("debug: mirroring events →", st.EventsLogPath())
@@ -317,10 +324,21 @@ func cmdRun(st *store.State, debug bool) error {
 	return sup.Run(ctx)
 }
 
-func runGUI(st *store.State) error {
+// runGUI opens the dashboard. A bare launch (no command) falls back to the TUI where
+// no GUI can run; an explicit `gui` reports why instead.
+func runGUI(st *store.State, bare bool) (err error) {
 	if err := appgui.Preflight(); err != nil {
+		if bare && errors.Is(err, appgui.ErrUnavailable) {
+			return runTUI(st)
+		}
 		return err
 	}
+	defer func() {
+		// The toolkit panics when it can't open a display (e.g. a dead X forward).
+		if r := recover(); r != nil {
+			err = fmt.Errorf("could not open the GUI (%v) — use `clashvless tui`", r)
+		}
+	}()
 	sock := st.ControlSocketPath()
 	embedded := false
 	client, err := control.Dial(sock)
@@ -390,13 +408,22 @@ func startEmbeddedDaemon(st *store.State) (func(), error) {
 	sup := engine.NewSupervisor(st, onStatus, onLog)
 	engine.SetLogSink(onLog)
 	go control.NewServer(sup, hub).Serve(ctx, ln)
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		if err := sup.Run(ctx); err != nil {
 			sup.Logf(loghub.Error, "daemon", "lifecycle", "%v", err)
 		}
 	}()
 	sup.Logf(loghub.Info, "daemon", "lifecycle", "embedded engine started; SOCKS5 %s:%d", st.ListenHost(), st.ListenPort)
-	return cancel, nil
+	return func() {
+		cancel()
+		// Exiting before Run returns would leave TUN routes and DNS behind.
+		select {
+		case <-stopped:
+		case <-time.After(10 * time.Second):
+		}
+	}, nil
 }
 
 // cmdStatus prints one status snapshot from the running daemon.
@@ -920,8 +947,8 @@ func cmdSlot(st *store.State, args []string) error {
 			return err
 		}
 		p, err := strconv.Atoi(args[2])
-		if err != nil || p < 1024 || p > 65535 {
-			return fmt.Errorf("invalid port %q (1024–65535)", args[2])
+		if err != nil || p < 1024 || p > 65534 {
+			return fmt.Errorf("invalid port %q (1024–65534)", args[2])
 		}
 		sl.Port = p
 		if err := st.Save(); err != nil {

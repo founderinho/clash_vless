@@ -1,9 +1,12 @@
+//go:build cgo
+
 package gui
 
 import (
 	"errors"
 	"unsafe"
 
+	"fyne.io/fyne/v2"
 	"golang.org/x/sys/windows"
 )
 
@@ -29,6 +32,8 @@ var (
 	getDC               = user32.NewProc("GetDC")
 	releaseDC           = user32.NewProc("ReleaseDC")
 	describePixelFormat = gdi32.NewProc("DescribePixelFormat")
+	getSystemMetrics    = user32.NewProc("GetSystemMetrics")
+	getDpiForSystem     = user32.NewProc("GetDpiForSystem")
 )
 
 // hasOpenGL applies GLFW's own filter: a pixel format must draw to a window, support
@@ -71,4 +76,22 @@ func Preflight() error {
 	title, _ := windows.UTF16PtrFromString("Clashvless")
 	_, _ = windows.MessageBox(0, text, title, mbIconError)
 	return errors.New("this graphics driver doesn't provide OpenGL — use `clashvless-cli tui`")
+}
+
+// fitScreen shrinks the window to the work area. If it were taller than the screen,
+// Windows would clamp it behind the toolkit's back and clicks would land off target.
+func fitScreen(size fyne.Size) fyne.Size {
+	const smCxFullScreen, smCyFullScreen = 16, 17
+	w, _, _ := getSystemMetrics.Call(smCxFullScreen)
+	h, _, _ := getSystemMetrics.Call(smCyFullScreen)
+	if w == 0 || h == 0 {
+		return size
+	}
+	scale := float32(1)
+	if getDpiForSystem.Find() == nil {
+		if dpi, _, _ := getDpiForSystem.Call(); dpi != 0 {
+			scale = float32(dpi) / 96
+		}
+	}
+	return fyne.NewSize(min(size.Width, float32(w)/scale), min(size.Height, float32(h)/scale))
 }

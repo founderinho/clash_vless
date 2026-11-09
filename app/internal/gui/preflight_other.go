@@ -1,6 +1,20 @@
-//go:build !windows
+//go:build !windows && !android && cgo
 
 package gui
 
-// Preflight checks that the GUI can open a window. Only Windows needs it so far.
-func Preflight() error { return nil }
+import (
+	"os"
+	"runtime"
+
+	"fyne.io/fyne/v2"
+)
+
+// Preflight catches a missing display: the toolkit panics on it instead of returning.
+func Preflight() error {
+	if runtime.GOOS == "darwin" || os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != "" {
+		return nil
+	}
+	return ErrUnavailable
+}
+
+func fitScreen(size fyne.Size) fyne.Size { return size }

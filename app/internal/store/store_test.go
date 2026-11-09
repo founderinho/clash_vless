@@ -1,6 +1,10 @@
 package store
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestIsPlain(t *testing.T) {
 	cases := []struct {
@@ -54,5 +58,27 @@ func TestListenHost(t *testing.T) {
 	state.ListenAddr = "0.0.0.0"
 	if got := state.ListenHost(); got != "0.0.0.0" {
 		t.Fatalf("explicit LAN ListenHost() = %q", got)
+	}
+}
+
+func TestListenAddrUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	fresh, err := Load(filepath.Join(dir, "new.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fresh.ListenHost(); got != "127.0.0.1" {
+		t.Fatalf("new install ListenHost() = %q", got)
+	}
+	old := filepath.Join(dir, "old.json")
+	if err := os.WriteFile(old, []byte(`{"listen_port":2084}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Load(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := upgraded.ListenHost(); got != "0.0.0.0" {
+		t.Fatalf("upgraded ListenHost() = %q, want the LAN reach it had before", got)
 	}
 }

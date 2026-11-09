@@ -19,6 +19,7 @@ import (
 	"clashvless/internal/store"
 	"clashvless/internal/tun"
 	"clashvless/internal/xray"
+	"regexp"
 )
 
 // Probe is a per-node reachability sample shown in the UI.
@@ -62,6 +63,7 @@ type Status struct {
 	Note      string // hysteresis hint, e.g. "↑ T1 available (2/3)"
 	HopOnly   bool   // primary slot's main is down but its first-hop port still serves
 	TunErr    string // TUN bring-up error, if any
+	TunUp     bool   // system traffic is actually captured (TunEnabled alone is only the wish)
 	Slots     []SlotStatus
 	Country   []Probe
 	Bypass    []Probe
@@ -120,7 +122,10 @@ type Supervisor struct {
 	tunBackendPort int       // fixed local port the bridge dials / the relay serves
 	tunMgr         *tun.Manager
 	tunOn          bool // OS routing currently applied (bridge may outlive this)
-	tunErr         bool // last bring-up failed; don't respin until toggled off
+	tunErr         bool // last bring-up failed; retried from tunRetryAt
+	tunRetryAt     time.Time
+	tunActive      atomic.Bool // tunOn for publish, which runs on other goroutines
+	badExitLogged  sync.Map    // invalid exits already reported: a runner re-parses them every cycle
 	tunErrMsg      string
 	tunMark        int32             // xray's off-tun socket mark (cached for the gateway-change re-point)
 	tunHosts       map[string]string // exit domain→IP map (cached so the re-point re-decorates without DNS)
@@ -1017,12 +1022,18 @@ type namedOB struct {
 	ob   json.RawMessage
 }
 
+// vlessURLPattern finds a URL quoted in a parse error: it carries the exit's UUID.
+var vlessURLPattern = regexp.MustCompile(`vless://[^\s"]*`)
+
 func (s *Supervisor) namedOutbounds(mains []store.Main) []namedOB {
 	var out []namedOB
 	for _, m := range mains {
 		ob, err := xray.VlessToOutbound(m.URL, "main")
 		if err != nil {
-			s.Logf(loghub.Error, "route", m.Name, "invalid exit %q: %v", m.Name, err)
+			msg := vlessURLPattern.ReplaceAllString(err.Error(), "vless://<redacted>")
+			if _, seen := s.badExitLogged.LoadOrStore(m.Name+"\x00"+msg, true); !seen {
+				s.Logf(loghub.Error, "route", m.Name, "invalid exit %q: %s", m.Name, msg)
+			}
 			continue
 		}
 		out = append(out, namedOB{name: m.Name, ob: ob})
@@ -1419,6 +1430,7 @@ func (s *Supervisor) publish() {
 	s.status.Note = primary.Note
 	s.status.HopOnly = primary.HopOnly
 	s.status.TunErr = s.tunErrMsg
+	s.status.TunUp = s.tunActive.Load()
 	s.status.Slots = slots
 	s.status.UpdatedAt = time.Now()
 	snap := s.status
@@ -1446,7 +1458,7 @@ func (s *Supervisor) syncTun(ctx context.Context) {
 	s.mu.Unlock()
 
 	switch {
-	case want && !s.tunOn && !s.tunErr:
+	case want && !s.tunOn && (!s.tunErr || !time.Now().Before(s.tunRetryAt)):
 		s.tunUpOrLatch(ctx, wantSlot, wantPort)
 	case !want && (s.tunOn || s.tunErr):
 		s.tunDownRouting()
@@ -1513,14 +1525,25 @@ func (s *Supervisor) tunReassert(ctx context.Context) {
 	}
 }
 
-// tunUpOrLatch brings TUN up, latching + surfacing the error on failure.
+// tunRetryGap paces bring-up retries. A failure can be transient: Windows refuses to
+// recreate a Wintun adapter for about a minute after a crash left the old one behind.
+const tunRetryGap = 20 * time.Second
+
+// tunUpOrLatch brings TUN up, surfacing a failure and scheduling a retry.
 func (s *Supervisor) tunUpOrLatch(ctx context.Context, slot string, port int) {
-	if err := s.tunUp(ctx, slot, port); err != nil {
-		s.tunErr = true
-		s.logf("TUN: %v", err)
-		s.mu.Lock()
-		s.tunErrMsg = "TUN: " + err.Error()
-		s.mu.Unlock()
+	err := s.tunUp(ctx, slot, port)
+	if err == nil {
+		return
+	}
+	msg := "TUN: " + err.Error()
+	s.tunErr = true
+	s.tunRetryAt = time.Now().Add(tunRetryGap)
+	s.mu.Lock()
+	changed := s.tunErrMsg != msg
+	s.tunErrMsg = msg
+	s.mu.Unlock()
+	if changed {
+		s.Logf(loghub.Error, "engine", "tun", "%s", msg)
 		s.publish()
 	}
 }
@@ -1668,6 +1691,8 @@ func (s *Supervisor) tunUp(ctx context.Context, tunSlot string, slotPort int) er
 	}
 
 	s.tunOn = true
+	s.tunActive.Store(true)
+	s.tunErr = false
 	s.tunSlotName = tunSlot
 	s.mu.Lock()
 	s.tunErrMsg = ""
@@ -1734,6 +1759,7 @@ func (s *Supervisor) tunDownRouting() {
 		s.relayTarget = 0
 	}
 	s.tunOn = false
+	s.tunActive.Store(false)
 	s.tunErr = false
 	s.tunSlotName = ""
 	s.mu.Lock()

@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -44,6 +45,7 @@ type Subscription struct {
 	URL       string    `json:"url"`
 	Nodes     []Node    `json:"nodes"`
 	LastFetch time.Time `json:"last_fetch"`
+	FetchErr  string    `json:"fetch_err,omitempty"` // why the last fetch failed; holds no token
 }
 
 // Main is a final-exit candidate. AllowNoHop lets it serve directly (T1);
@@ -186,7 +188,7 @@ type State struct {
 const DefaultUA = "Happ/3.13.0"
 
 // Version is the app version, shown in the TUI header and `version` command.
-const Version = "0.28.0"
+const Version = "0.28.1"
 
 func Dir() (string, error) {
 	base, err := os.UserConfigDir()
@@ -222,6 +224,7 @@ func Load(path string) (*State, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		s.Device = defaultDevice()
+		s.ListenAddr = "127.0.0.1"
 		s.applyDefaults()
 		return s, s.Save()
 	}
@@ -235,6 +238,12 @@ func Load(path string) (*State, error) {
 
 	changed := false
 	if s.migrate() {
+		changed = true
+	}
+	// An older document's empty address meant "reachable from the LAN": keep that on
+	// upgrade. Only new installs default to loopback. Android pins its own in platformInit.
+	if s.ListenAddr == "" && runtime.GOOS != "android" {
+		s.ListenAddr = "0.0.0.0"
 		changed = true
 	}
 	if s.Device.HWID == "" {
@@ -536,7 +545,7 @@ func (s *State) AddSlot(name string) *Slot {
 			}
 		}
 	}
-	s.Slots = append(s.Slots, Slot{Name: name, Port: s.freeSlotPort(), Enabled: true})
+	s.Slots = append(s.Slots, Slot{Name: name, Port: s.FreeSlotPort(), Enabled: true})
 	return &s.Slots[len(s.Slots)-1]
 }
 
@@ -548,10 +557,10 @@ func (s *State) RemoveSlot(i int) {
 	s.Slots = append(s.Slots[:i], s.Slots[i+1:]...)
 }
 
-// freeSlotPort returns the lowest local port not already claimed by the main
+// FreeSlotPort returns the lowest local port not already claimed by the main
 // port, an entry-hop port, or another slot. Each slot also exposes its first
 // hop on Port+1, so slots are spaced two apart (both p and p+1 must be free).
-func (s *State) freeSlotPort() int {
+func (s *State) FreeSlotPort() int {
 	used := map[int]bool{s.ListenPort: true, s.ListenPort + 1: true}
 	if s.EntryPort > 0 {
 		used[s.EntryPort] = true

@@ -9,14 +9,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
 // Supported reports that TUN mode is implemented on Windows.
 //
-// NOTE: the Windows backend is code-complete but has not been runtime-tested by
-// the author. It needs wintun.dll next to the executable (xray's tun inbound
+// It needs wintun.dll next to the executable (xray's tun inbound
 // loads it to create the Wintun adapter) and an elevated (Administrator) process.
 func Supported() bool { return true }
 
@@ -30,10 +30,33 @@ func FwMark() int32 { return 0 }
 // UplinkDevice is unused off Linux (bypass is by explicit per-server routes).
 func UplinkDevice() string { return "" }
 
-// SystemResolver has no /etc/resolv.conf equivalent to read on Windows, so
-// DIRECT-mode DNS can't auto-adopt the system resolver here — the user sets one
-// explicitly with `tun dns <ip>`. Returns "".
-func SystemResolver() string { return "" }
+// SystemResolver returns the DNS server of the adapter that has the default gateway.
+func SystemResolver() string {
+	size := uint32(16 * 1024)
+	for attempt := 0; attempt < 3; attempt++ {
+		buf := make([]byte, size)
+		first := (*windows.IpAdapterAddresses)(unsafe.Pointer(&buf[0]))
+		err := windows.GetAdaptersAddresses(windows.AF_UNSPEC, windows.GAA_FLAG_INCLUDE_GATEWAYS, 0, first, &size)
+		if err == windows.ERROR_BUFFER_OVERFLOW {
+			continue
+		}
+		if err != nil {
+			return ""
+		}
+		for a := first; a != nil; a = a.Next {
+			if a.OperStatus != windows.IfOperStatusUp || a.FirstGatewayAddress == nil {
+				continue
+			}
+			for d := a.FirstDnsServerAddress; d != nil; d = d.Next {
+				if ip := d.Address.IP(); ip != nil && ip.To4() != nil {
+					return ip.String()
+				}
+			}
+		}
+		return ""
+	}
+	return ""
+}
 
 // RemoveDevice is a no-op off Linux (wintun adapters are managed by xray).
 func RemoveDevice(string) {}
@@ -54,10 +77,28 @@ func Privileged() bool {
 	return err == nil && member
 }
 
+const cpOEM = 1 // CP_OEMCP
+
+// oemString decodes a console tool's output, which is in the OEM code page.
+func oemString(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	n, err := windows.MultiByteToWideChar(cpOEM, 0, &b[0], int32(len(b)), nil, 0)
+	if err != nil || n == 0 {
+		return string(b)
+	}
+	wide := make([]uint16, n)
+	if _, err := windows.MultiByteToWideChar(cpOEM, 0, &b[0], int32(len(b)), &wide[0], n); err != nil {
+		return string(b)
+	}
+	return windows.UTF16ToString(wide)
+}
+
 func (m *Manager) run(name string, args ...string) error {
 	out, err := exec.Command(name, args...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(oemString(out)))
 	}
 	return nil
 }
@@ -126,17 +167,22 @@ func (m *Manager) osUp(cfg Config) error {
 	}
 
 	// Block IPv6: the tunnel is IPv4-only, so a dual-stack app would leak out over
-	// v6. Route global-unicast v6 into the tun (best-effort — untested on Windows)
+	// v6. Route global-unicast v6 into the tun
 	// so it can't escape on the real network.
 	if cfg.BlockIPv6 {
-		m.runSoft("netsh", "interface", "ipv6", "add", "route", IPv6BlockRange, "interface="+cfg.Name)
-		m.logf("tun: IPv6 routed into %s (best-effort v6 leak block)", cfg.Name)
+		// store=active: netsh routes persist by default and would outlive an unclean exit.
+		_ = m.run("netsh", "interface", "ipv6", "delete", "route", IPv6BlockRange, "interface="+cfg.Name)
+		if err := m.run("netsh", "interface", "ipv6", "add", "route", IPv6BlockRange, "interface="+cfg.Name, "store=active"); err != nil {
+			m.logf("tun: IPv6 block failed, dual-stack apps may leak over v6: %v", err)
+		} else {
+			m.logf("tun: IPv6 routed into %s (v6 leak block)", cfg.Name)
+		}
 	}
 
 	if cfg.DNS != "" {
 		m.runSoft("netsh", "interface", "ip", "set", "dns", "name="+cfg.Name, "static", cfg.DNS)
 	}
-	m.logf("tun: up — default routed through %s (IPv6 blocked)", cfg.Name)
+	m.logf("tun: up — default routed through %s", cfg.Name)
 	return nil
 }
 
@@ -254,8 +300,9 @@ func (m *Manager) osReapplyDNS(staticResolver string, direct bool) error {
 	return nil
 }
 
-// currentDHCPResolver is unimplemented on Windows (real-net re-detect n/a).
-func currentDHCPResolver(string) string { return "" }
+// currentDHCPResolver reads the adapter's own setting: the DNS set on the tun adapter
+// has no gateway, so it can't be mistaken for it.
+func currentDHCPResolver(string) string { return SystemResolver() }
 
 // HealStaleResolver is macOS-only (Windows sets DNS on the tun adapter, which goes
 // away with the device — no persistent service pin to strand). See tun_darwin.go.

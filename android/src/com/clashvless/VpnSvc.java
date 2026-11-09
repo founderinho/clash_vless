@@ -99,15 +99,15 @@ public class VpnSvc extends VpnService {
         try {
             String sock = new File(getCacheDir(), "tun.sock").getAbsolutePath();
             Core.startDaemon(this, sock);
-            for (int attempt = 0; Ctl.state == null && attempt < 50; attempt++) Thread.sleep(100);
-            org.json.JSONObject st = Ctl.state;
-            if (st == null) throw new IllegalStateException("Daemon configuration is unavailable");
-            int mtu = st == null ? 0 : st.optInt("tun_mtu");
+            // A VPN-mode daemon binds control.sock only after it gets the fd, so when nothing
+            // else started one (Quick Settings tile, sticky restart) the file is the only source.
+            org.json.JSONObject st = Ctl.state != null ? Ctl.state : savedState();
+            int mtu = st.optInt("tun_mtu");
             if (mtu <= 0) mtu = 1500;
-            String address = st == null ? "" : st.optString("tun_addr", "198.18.0.1/30");
+            String address = st.optString("tun_addr", "198.18.0.1/30");
             if (address.isEmpty()) address = "198.18.0.1/30";
             String[] cidr = address.split("/");
-            String dns = st == null ? "" : st.optString("tun_static_dns", "8.8.8.8");
+            String dns = st.optString("tun_static_dns", "8.8.8.8");
             if (dns.isEmpty()) dns = "8.8.8.8";
             tun = new Builder()
                     .setSession("clashvless")
@@ -123,6 +123,17 @@ public class VpnSvc extends VpnService {
         } catch (Exception e) {
             Core.log("VPN start failed: " + e);
             shutdown();
+        }
+    }
+
+    private org.json.JSONObject savedState() {
+        try (java.io.FileInputStream in = new java.io.FileInputStream(new File(getFilesDir(), "state.json"))) {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+            return new org.json.JSONObject(out.toString("UTF-8"));
+        } catch (Exception e) {
+            return new org.json.JSONObject();
         }
     }
 

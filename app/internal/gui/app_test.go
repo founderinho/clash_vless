@@ -1,4 +1,4 @@
-//go:build !android
+//go:build !android && cgo
 
 package gui
 
@@ -54,5 +54,29 @@ func TestRenderAllPages(t *testing.T) {
 				t.Fatalf("content objects = %d", len(d.content.Objects))
 			}
 		})
+	}
+}
+
+func TestConnectionSummary(t *testing.T) {
+	cases := []struct {
+		name     string
+		wanted   bool
+		status   engine.Status
+		headline string
+		good     bool
+		label    string
+	}{
+		{"tunnel failed but a route works", true, engine.Status{Tier: 2, TunErr: "TUN: boom"}, "Not protected", false, "VPN failed"},
+		{"route works, tunnel still coming up", true, engine.Status{Tier: 2}, "Connecting", false, "VPN on · Connecting"},
+		{"tunnel up with a route", true, engine.Status{Tier: 2, TunUp: true}, "Connected", true, "VPN on · Connected"},
+		{"tunnel up, every exit down", true, engine.Status{TunUp: true}, "No route", false, "VPN on · No route"},
+		{"VPN off, proxy works", false, engine.Status{Tier: 2}, "Proxy ready", true, "VPN off"},
+		{"VPN off, nothing works", false, engine.Status{}, "Disconnected", false, "VPN off"},
+	}
+	for _, c := range cases {
+		headline, good, label := connectionSummary(c.wanted, c.status)
+		if headline != c.headline || good != c.good || label != c.label {
+			t.Errorf("%s: got %q %v %q", c.name, headline, good, label)
+		}
 	}
 }

@@ -1,4 +1,4 @@
-//go:build !android
+//go:build !android && cgo
 
 package gui
 
@@ -68,7 +68,7 @@ func (d *dashboard) settingsView() fyne.CanvasObject {
 				d.numberSetting("Failure threshold", "down_threshold", effective(d.state.DownThreshold, 2), 1, 10),
 			),
 			panel("Local listeners", "Listener and log changes apply after a daemon restart",
-				d.numberSetting("Listen port", "listen_port", d.state.ListenPort, 1024, 65535),
+				d.numberSetting("Listen port", "listen_port", d.state.ListenPort, 1024, 65534),
 				d.numberSetting("First-hop port · 0 = auto", "entry_port", d.state.EntryPort, 0, 65535),
 				d.boolSetting("Allow LAN connections", "listen_addr", d.state.ListenHost() == "0.0.0.0", "0.0.0.0", "127.0.0.1"),
 				d.selectSetting("Xray log level", "log_level", d.state.Loglevel(), []string{"none", "error", "warning", "info", "debug"}, nil),

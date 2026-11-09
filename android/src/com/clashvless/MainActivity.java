@@ -186,7 +186,7 @@ public class MainActivity extends Activity {
 
     private void renderHead() {
         JSONObject s = Ctl.status;
-        boolean online = VpnSvc.running && s != null && s.optInt("Tier") > 0;
+        boolean online = VpnSvc.running && s != null && s.optInt("Tier") > 0 && s.optBoolean("TunUp");
         connectionLabel.setText(!VpnSvc.running ? "Disconnected" : online ? "Connected" : "Connecting");
         connectionLabel.setTextColor(online ? ACCENT : MUTED);
         switchUpdating = true;
@@ -207,8 +207,11 @@ public class MainActivity extends Activity {
     private void renderStatus(JSONObject st, LinearLayout target) {
         JSONObject s = Ctl.status;
         boolean online = s != null && s.optInt("Tier") > 0;
-        LinearLayout hero = card(online ? "Connected" : "Not connected",
-                online ? "Your private route is ready" : "Waiting for a working exit");
+        boolean protectedNow = online && VpnSvc.running && s.optBoolean("TunUp");
+        LinearLayout hero = card(protectedNow ? "Connected" : online ? "Route ready" : "Not connected",
+                protectedNow ? "Your traffic is protected"
+                        : online ? "Turn on the VPN to protect this device"
+                        : "Waiting for a working exit");
         hero.addView(text(s == null ? "" : line(s), 14, online ? ACCENT : MUTED, false));
         hero.addView(spacer(10));
         LinearLayout metrics = new LinearLayout(this);
@@ -217,7 +220,7 @@ public class MainActivity extends Activity {
         addMetric(metrics, "Active tier", online ? "T" + s.optInt("Tier") : "-");
         hero.addView(metrics);
         target.addView(hero);
-        if (s != null && !s.optString("TunErr").isEmpty()) target.addView(card("VPN error", s.optString("TunErr")));
+        if (s != null && !s.optString("TunErr").isEmpty()) target.addView(card("VPN isn't running", "Your traffic is NOT going through the tunnel. Retrying automatically. " + s.optString("TunErr")));
 
         LinearLayout endpoints = card("Local endpoints", VpnSvc.running ? "System-wide VPN is on" : "Native SOCKS5 listeners");
         JSONArray slots = st.optJSONArray("slots");
@@ -261,7 +264,8 @@ public class MainActivity extends Activity {
             String fetched = sb.optString("last_fetch");
             if (fetched.length() > 16) fetched = fetched.substring(0, 16).replace('T', ' ');
             boolean active = st.optBoolean("auto_select") || st.optInt("active_sub") == idx;
-            LinearLayout item = card(sb.optString("name"), (nodes == null ? 0 : nodes.length()) + " nodes | " + fetched + (active ? " | Active" : ""));
+            LinearLayout item = card(sb.optString("name"), (nodes == null ? 0 : nodes.length()) + " nodes | " + fetched + (active ? " | Active" : "")
+                    + (sb.optString("fetch_err").isEmpty() ? "" : "\nLast fetch failed: " + sb.optString("fetch_err")));
             item.addView(row(btn("Use only this", false, () -> {
                 Ctl.patch("active_sub", idx);
                 Ctl.patch("auto_select", false);
@@ -473,7 +477,7 @@ public class MainActivity extends Activity {
             body.addView(failover);
 
             LinearLayout network = card("Local listeners", "Restart the daemon to apply these changes");
-            intRow(network, st, "Listen port", "listen_port", 2084, 1024, 65535);
+            intRow(network, st, "Listen port", "listen_port", 2084, 1024, 65534);
             intRow(network, st, "First-hop port | 0 = auto", "entry_port", 0, 0, 65535);
             boolean lan = !"127.0.0.1".equals(st.optString("listen_addr"));
             actionRow(network, "Allow LAN connections", lan ? "0.0.0.0" : "127.0.0.1", () -> Ctl.patch("listen_addr", lan ? "127.0.0.1" : "0.0.0.0"));
@@ -621,14 +625,14 @@ public class MainActivity extends Activity {
         ask("Slot SOCKS5 port", "" + sl.optInt("port"), InputType.TYPE_CLASS_NUMBER, value -> {
             try {
                 int port = Integer.parseInt(value);
-                if (port < 1024 || port > 65535) throw new NumberFormatException();
+                if (port < 1024 || port > 65534) throw new NumberFormatException();
                 for (int i = 0; i < slots.length(); i++) {
                     int other = slots.optJSONObject(i).optInt("port");
                     if (i != si && (other == port || other == port + 1 || other + 1 == port)) { toast("Port is already used"); return; }
                 }
                 sl.put("port", port);
                 Ctl.patch("slots", slots);
-            } catch (NumberFormatException e) { toast("Port must be between 1024 and 65535"); }
+            } catch (NumberFormatException e) { toast("Port must be between 1024 and 65534"); }
             catch (Exception e) { failed(e); }
         });
     }
@@ -880,6 +884,7 @@ public class MainActivity extends Activity {
         int base = st.optInt("listen_port", 2084);
         List<Integer> used = new ArrayList<>();
         used.add(base); used.add(base + 1);
+        used.add(st.optInt("entry_port"));
         JSONArray slots = st.optJSONArray("slots");
         for (int i = 0; slots != null && i < slots.length(); i++) {
             int port = slots.optJSONObject(i).optInt("port");

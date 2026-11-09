@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds dist/clashvless.apk without Gradle: go → javac → d8 → aapt2 → apksigner.
-# Needs: Go, a JDK, $ANDROID_HOME with platforms;android-34 + build-tools;34.0.0, and ideally an NDK
+# Needs: Go, a JDK, $ANDROID_HOME with platforms;android-34 + build-tools;35.0.0, and ideally an NDK
 # (cgo: system resolver + the 32-bit armeabi-v7a build).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -18,7 +18,9 @@ if [ -n "${JAVA_HOME:-}" ]; then
   export PATH="$JAVA_HOME/bin:$PATH"
 fi
 SDK=${ANDROID_HOME:-$HOME/Android/Sdk}
-BT=$SDK/build-tools/34.0.0
+# d8 from build-tools 34.0.0 crashes on MainActivity with a NullPointerException.
+BT=$SDK/build-tools/35.0.0
+[ -d "$BT" ] || { echo "needs build-tools 35.0.0: sdkmanager \"build-tools;35.0.0\"" >&2; exit 1; }
 JAR=$SDK/platforms/android-34/android.jar
 OUT=$ROOT/tmp/android-build
 NDK=${ANDROID_NDK_HOME:-}

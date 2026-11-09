@@ -185,7 +185,6 @@ func (m *model) handleWizardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // retry doesn't stack duplicates.
 func (m *model) startWizFetch() {
 	m.wiz, m.wizErr = wizFetch, ""
-	delete(m.subErr, m.wizSubURL) // clear a prior failure so the view shows "fetching…"
 	m.removeSubByURL(m.wizSubURL)
 	_ = m.client.Send(control.Command{Cmd: "addsub", URL: m.wizSubURL})
 }
@@ -252,8 +251,8 @@ func (m *model) wizardView() string {
 		body = "Enter HWID " + dimStyle.Render("(10–64 chars: a–z A–Z 0–9 = - · paste one from another device to reuse its slot)") + ":\n\n  " + m.inputField() + "\n\n  " + key("Enter") + " set & fetch    " + key("Esc") + " back"
 	case wizFetch:
 		switch {
-		case m.subErr[m.wizSubURL] != "":
-			body = badStyle.Render("fetch failed:") + "\n  " + m.subErr[m.wizSubURL] + "\n\n  " + key("r") + " retry    " + key("b") + " back"
+		case m.subByURL(m.wizSubURL) != nil && m.subByURL(m.wizSubURL).FetchErr != "":
+			body = badStyle.Render("fetch failed:") + "\n  " + m.subByURL(m.wizSubURL).FetchErr + "\n\n  " + key("r") + " retry    " + key("b") + " back"
 		case m.subByURL(m.wizSubURL) != nil: // sub arrived but empty, no logged error
 			body = badStyle.Render("fetched 0 nodes — the sub is empty or the URL is wrong") + "\n\n  " + key("r") + " retry    " + key("b") + " back"
 		default:

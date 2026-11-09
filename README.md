@@ -47,6 +47,9 @@ To build the Windows GUI directly:
 go -C app build -ldflags="-H=windowsgui" -o ../dist/clashvless.exe .
 ```
 
+The GUI needs cgo and OpenGL. With `CGO_ENABLED=0` you get the same binary without the GUI, where bare
+`clashvless` opens the terminal dashboard. That is also the way to cross-compile for macOS from another OS.
+
 ## Brand assets
 
 The reusable Route Signal identity lives in [`app/branding`](app/branding): vector logo, custom SVG icons,
@@ -63,8 +66,9 @@ clashvless                               # GUI; use `clashvless tui` for the ter
 ```
 
 On a fresh install, add a subscription in **Subscriptions**, then add a final VLESS exit in
-**Exit routes**. Point your apps at `socks5://127.0.0.1:2084`. Listeners are loopback-only by default;
-enable **Allow LAN connections** explicitly if other devices need access.
+**Exit routes**. Point your apps at `socks5://127.0.0.1:2084`. New installs listen on loopback only;
+enable **Allow LAN connections** explicitly if other devices need access. A config from an older version
+keeps the LAN access it already had.
 
 The **Activity** page shares structured engine/xray records with the CLI and TUI. Filter by severity,
 module, or text (` & ` requires every term; ` | ` separates alternatives), with Basic/All/Errors presets,
@@ -169,8 +173,7 @@ route private ranges through the exit too.
   uplink (the device bind survives firewalls — e.g. Docker/firewalld — that strip the packet mark, which
   would otherwise loop xray's own traffic back into the tun; the main route table stays clean — no
   per-server routes), on **Windows/macOS** via explicit per-server bypass routes.
-- **Linux, Windows, and macOS.** Linux and macOS are tested and working; **Windows is code-complete but
-  not yet runtime-tested — treat it as beta.**
+- **Linux, Windows, and macOS.** All are tested and working. Windows was tested on Windows 10 1909.
 - **Windows** needs `wintun.dll` next to the executable (from [wintun.net](https://www.wintun.net/)).
 - **macOS** uses a kernel-named `utunN` device (xray requires the `utunN` form); the default is `utun9` —
   set `tun_name` to another `utunN` if that unit is busy.

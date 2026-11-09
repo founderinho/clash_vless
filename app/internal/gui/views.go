@@ -1,4 +1,4 @@
-//go:build !android
+//go:build !android && cgo
 
 package gui
 
@@ -22,20 +22,29 @@ import (
 	"clashvless/internal/store"
 )
 
+// connectionSummary never claims "Connected" unless system traffic is really captured:
+// a working SOCKS route says nothing about the VPN.
+func connectionSummary(vpnWanted bool, s engine.Status) (headline string, good bool, vpnLabel string) {
+	online := s.Tier > 0
+	switch {
+	case vpnWanted && s.TunErr != "":
+		return "Not protected", false, "VPN failed"
+	case vpnWanted && !s.TunUp:
+		return "Connecting", false, "VPN on · Connecting"
+	case vpnWanted && online:
+		return "Connected", true, "VPN on · Connected"
+	case vpnWanted:
+		return "No route", false, "VPN on · No route"
+	case online:
+		return "Proxy ready", true, "VPN off"
+	}
+	return "Disconnected", false, "VPN off"
+}
+
 func (d *dashboard) overviewView() fyne.CanvasObject {
 	status := d.status
 	online := status.Tier > 0
-	connection := "Disconnected"
-	if online {
-		connection = "Connected"
-	}
-	vpnLabel := "VPN off"
-	if d.state.TunEnabled {
-		vpnLabel = "VPN on · Connecting"
-		if online {
-			vpnLabel = "VPN on · Connected"
-		}
-	}
+	connection, connected, vpnLabel := connectionSummary(d.state.TunEnabled, status)
 	vpnSwitch := newConnectionSwitch(d.state.TunEnabled, func(on bool) {
 		d.patch(map[string]any{"tun_enabled": on})
 	})
@@ -59,7 +68,7 @@ func (d *dashboard) overviewView() fyne.CanvasObject {
 		tier = fmt.Sprintf("T%d", status.Tier)
 	}
 	connectionItems := []fyne.CanvasObject{
-		container.NewBorder(nil, nil, statusText(connection, online), vpnControl),
+		container.NewBorder(nil, nil, statusText(connection, connected), vpnControl),
 		ellipsized(route),
 		container.NewGridWithColumns(3,
 			metric("Latency", milliseconds(status.Egress)),
@@ -72,7 +81,7 @@ func (d *dashboard) overviewView() fyne.CanvasObject {
 	}
 	items := []fyne.CanvasObject{panel("Connection", "", connectionItems...)}
 	if status.TunErr != "" {
-		items = append(items, panel("VPN error", "", wrappingMuted(status.TunErr)))
+		items = append(items, panel("VPN isn't running", "Your traffic is NOT going through the tunnel. Retrying automatically.", wrappingMuted(status.TunErr)))
 	}
 
 	endpointItems := []fyne.CanvasObject{}
@@ -166,13 +175,14 @@ func (d *dashboard) subscriptionsView() fyne.CanvasObject {
 			container.NewVBox(ellipsized(sub.Name), muted(fmt.Sprintf("%d nodes · %s%s", len(sub.Nodes), updated, active))),
 			container.NewHBox(actions...),
 		))
+		if sub.FetchErr != "" {
+			providerItems = append(providerItems, wrappingMuted("Last fetch failed: "+sub.FetchErr))
+		}
 	}
 
-	query := widget.NewEntry()
-	query.SetPlaceHolder("Filter nodes")
-	query.SetText(d.nodeQuery)
-	query.OnSubmitted = func(value string) { d.nodeQuery = value; d.render() }
-	filter := widget.NewButton("Filter", func() { d.nodeQuery = query.Text; d.render() })
+	query := d.textInput("nodes", "Filter nodes", d.nodeQuery, func(value string) { d.nodeQuery = value })
+	query.OnSubmitted = func(string) { d.render() }
+	filter := widget.NewButton("Filter", d.render)
 	nodeItems := []fyne.CanvasObject{container.NewBorder(nil, nil, nil, filter, query)}
 	if d.state.PinEntry != "" {
 		nodeItems = append(nodeItems, widget.NewButtonWithIcon("Unpin "+d.state.PinEntry, theme.CancelIcon(), func() {
@@ -286,8 +296,8 @@ func (d *dashboard) editSlotPort(slotIndex int) {
 	current := d.state.Slots[slotIndex].Port
 	d.ask("Edit slot port", "SOCKS5 port (next port serves the first hop)", strconv.Itoa(current), "Save", func(value string) {
 		port, err := strconv.Atoi(value)
-		if err != nil || port < 1024 || port > 65535 {
-			d.notify("Port must be between 1024 and 65535")
+		if err != nil || port < 1024 || port > 65534 {
+			d.notify("Port must be between 1024 and 65534 (the next port serves the first hop)")
 			return
 		}
 		for index, slot := range d.state.Slots {
@@ -296,7 +306,11 @@ func (d *dashboard) editSlotPort(slotIndex int) {
 				return
 			}
 		}
-		d.updateSlots(func(slots []store.Slot) { slots[slotIndex].Port = port })
+		d.updateSlots(func(slots []store.Slot) {
+			if slotIndex < len(slots) {
+				slots[slotIndex].Port = port
+			}
+		})
 	})
 }
 
@@ -310,6 +324,9 @@ func (d *dashboard) removeSlot(slotIndex int) {
 		data, _ := json.Marshal(d.state.Slots)
 		var slots []store.Slot
 		_ = json.Unmarshal(data, &slots)
+		if slotIndex >= len(slots) || slots[slotIndex].Name != name {
+			return // another client changed the slots while this dialog was open
+		}
 		slots = append(slots[:slotIndex], slots[slotIndex+1:]...)
 		d.patch(map[string]any{"slots": slots})
 	})
@@ -356,12 +373,9 @@ func (d *dashboard) activityView() fyne.CanvasObject {
 		d.notify("Log record copied")
 		list.Unselect(id)
 	}
-	d.logList = list
+	d.logList, d.logRefresh = list, refresh
 
-	query := widget.NewEntry()
-	query.SetPlaceHolder("Search: route & failed | timeout")
-	query.SetText(d.logFilter.Query)
-	query.OnChanged = func(value string) { d.logFilter.Query = value; refresh() }
+	query := d.textInput("log", "Search: route & failed | timeout", d.logFilter.Query, func(value string) { d.logFilter.Query = value; refresh() })
 
 	modules := []string{"All modules"}
 	seen := map[string]bool{}

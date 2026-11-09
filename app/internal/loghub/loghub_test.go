@@ -46,3 +46,13 @@ func TestFilter(t *testing.T) {
 		t.Fatal("disabled level matched")
 	}
 }
+
+func TestParseLineLevels(t *testing.T) {
+	for _, level := range []Level{Info, Warning, Error, Debug} {
+		line := New(level, "route", "main", "unreachable now").String()
+		parsed := ParseLine(line)
+		if parsed.Level != level || parsed.Module != "route" || parsed.Element != "main" || parsed.Message != "unreachable now" {
+			t.Errorf("ParseLine(%q) = %+v", line, parsed)
+		}
+	}
+}
