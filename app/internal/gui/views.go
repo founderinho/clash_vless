@@ -288,7 +288,6 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 		rows = append(rows, widget.NewButtonWithIcon("Add final exit", theme.ContentAddIcon(), func() { d.addMain(slotIndex) }))
 		items = append(items, panel("", "", rows...))
 	}
-	items = append(items, panel("Routing compatibility", "Vision exits are direct-only. REALITY exits require a non-Vision hop; plain exits support any hop."))
 	return container.NewVBox(items...)
 }
 

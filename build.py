@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """Build the desktop application using the active Go configuration."""
 
-import io
 import logging
 import subprocess
 import re
 import shutil
 import sys
-import urllib.request
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -54,34 +51,6 @@ def run_build(command):
         raise subprocess.CalledProcessError(code, command)
 
 
-def install_wintun(goarch):
-    """Install the signed upstream DLL matching the Windows build target."""
-    arches = {"amd64": "amd64", "386": "x86", "arm64": "arm64", "arm": "arm"}
-    if goarch not in arches:
-        raise ValueError(f"Wintun does not support Windows GOARCH={goarch}")
-    url = "https://www.wintun.net/builds/wintun-0.14.1.zip"
-    member = f"wintun/bin/{arches[goarch]}/wintun.dll"
-    logging.info("Downloading Wintun 0.14.1 for %s", goarch)
-    with urllib.request.urlopen(url, timeout=60) as response:
-        archive_data = response.read()
-    with zipfile.ZipFile(io.BytesIO(archive_data)) as archive:
-        dll = archive.read(member)
-    output = DIST / "wintun.dll"
-    # Replace only after the full archive has been downloaded and validated.
-    import tempfile
-    import os
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(dir=DIST, delete=False) as f:
-            temporary = Path(f.name)
-            f.write(dll)
-        os.replace(temporary, output)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-    logging.info("Installed %s", output)
-
-
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S", stream=sys.stdout)
     try:
@@ -106,9 +75,9 @@ def main():
             run_build(command)
             logging.info("Built %s", output)
         if values.get("GOOS") == "windows":
-            install_wintun(values.get("GOARCH", ""))
+            logging.info("Wintun is bundled in both executables; no separate download is needed")
         return 0
-    except (OSError, subprocess.CalledProcessError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+    except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         logging.error("Build failed: %s", exc)
         return exc.returncode if isinstance(exc, subprocess.CalledProcessError) and exc.returncode > 0 else 1
 

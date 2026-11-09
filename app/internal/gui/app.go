@@ -203,9 +203,15 @@ func (d *dashboard) render() {
 		d.command(control.Command{Cmd: "kick"}, "Route check started")
 	})
 	title := container.NewVBox(headingText(titles[d.page][0], 20), muted(titles[d.page][1]))
+	headerContent := container.NewVBox(container.NewBorder(nil, nil, title, recheck))
+	headerBottomPadding := float32(16)
+	if d.page == "routes" {
+		headerContent.Add(inset(routingCompatibilityPanel(), 6, 0, 0, 0))
+		headerBottomPadding = 8
+	}
 	header := container.NewStack(
 		canvas.NewRectangle(colorSidebar),
-		inset(container.NewBorder(nil, nil, title, recheck), 10, 16, 16, 16),
+		inset(headerContent, 10, headerBottomPadding, 16, 16),
 	)
 	scroll := container.NewVScroll(inset(body, 12, 16, 16, 16))
 	d.content.Objects = []fyne.CanvasObject{container.NewBorder(header, nil, nil, nil, scroll)}
@@ -404,6 +410,20 @@ func panel(title, subtitle string, objects ...fyne.CanvasObject) fyne.CanvasObje
 	background.StrokeColor = colorBorder
 	background.StrokeWidth = 1
 	return container.NewStack(background, content)
+}
+
+// routingCompatibilityPanel keeps the warning visible above the scrollable routes.
+func routingCompatibilityPanel() fyne.CanvasObject {
+	border := canvas.NewRectangle(colorSurface)
+	border.StrokeColor = colorDanger
+	border.StrokeWidth = 1
+	border.CornerRadius = 3
+	mark := canvas.NewText("!", colorDanger)
+	mark.TextStyle = fyne.TextStyle{Bold: true}
+	mark.TextSize = 13
+	icon := container.NewGridWrap(fyne.NewSize(20, 20), container.NewStack(border, container.NewCenter(mark)))
+	title := container.NewBorder(nil, nil, nil, icon, strong("Routing compatibility"))
+	return panel("", "", title, wrappingMuted("Vision exits are direct-only. REALITY exits require a non-Vision hop; plain exits support any hop."))
 }
 
 func metric(name, value string) fyne.CanvasObject {

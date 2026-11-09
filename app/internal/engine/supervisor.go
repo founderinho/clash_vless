@@ -1724,6 +1724,9 @@ func (s *Supervisor) tunUp(ctx context.Context, tunSlot string, slotPort int) er
 // frees it, so we back off and retry while the kernel catches up. A busy that
 // never clears (another clashvless daemon owns the device) surfaces with a hint.
 func (s *Supervisor) startBridge(cfg []byte, name string) (*Instance, error) {
+	if err := tun.Prepare(s.logf); err != nil {
+		return nil, fmt.Errorf("prepare TUN support: %w", err)
+	}
 	const attempts = 8
 	var err error
 	for i := 0; i < attempts; i++ {

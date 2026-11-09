@@ -5,7 +5,7 @@
 // "does xray's native TUN inbound create a device in this build, on this kernel?".
 //
 //	sudo go -C app run ./cmd/tunprobe        # Linux
-//	go run ./cmd/tunprobe                     # Windows (elevated; needs wintun.dll)
+//	go run ./cmd/tunprobe                     # Windows (elevated)
 //
 // Separate main (pulls in the tun inbound); not part of the app binary.
 package main
@@ -31,6 +31,10 @@ func main() {
 		fmt.Println("tunprobe: needs root/Administrator to create a TUN device")
 		os.Exit(1)
 	}
+	if err := tun.Prepare(func(format string, args ...any) { fmt.Printf(format+"\n", args...) }); err != nil {
+		fmt.Println("prepare TUN support:", err)
+		os.Exit(1)
+	}
 
 	cfg, err := xray.BuildTunBridge(2084, name, 1500, "warning")
 	if err != nil {
@@ -41,7 +45,6 @@ func main() {
 	inst, err := engine.Start(cfg)
 	if err != nil {
 		fmt.Println("✗ bridge failed to start:", err)
-		fmt.Println("  (Windows needs wintun.dll next to the binary)")
 		os.Exit(1)
 	}
 

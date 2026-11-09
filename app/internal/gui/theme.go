@@ -40,7 +40,7 @@ func (nativeTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) co
 	case theme.ColorNamePlaceHolder, theme.ColorNameDisabled:
 		return colorMuted
 	case theme.ColorNameHover:
-		return colorBorder
+		return color.NRGBA{R: 48, G: 115, B: 102, A: 255}
 	case theme.ColorNamePressed:
 		return colorSurface
 	case theme.ColorNameSeparator, theme.ColorNameInputBorder:

@@ -8,7 +8,8 @@ or a **system-wide TUN** — with automatic tiered failover.
 - `app/` — the Go module (`module clashvless`, Go 1.26). All source lives here.
   - `main.go` — CLI entrypoint + command dispatch.
   - `branding/` — shared transparent vector/raster logo, icons, and color tokens. The Windows ICO contains
-    seven raster sizes; `app/icon_windows_amd64.syso` embeds it into Explorer/launcher resources.
+    seven raster sizes; `app/icon_windows_{amd64,386}.syso` embeds it and the `requireAdministrator`
+    manifest into Windows x64 and x86 executables (both GUI and CLI request elevation).
   - `internal/store` — on-disk state (subs, cached nodes, **slots** = per-port failover pools of mains,
     stable device identity, tunables).
   - `internal/gui` — native Fyne desktop GUI. `render()` rebuilds the page on every status event, so it restores the
@@ -16,6 +17,8 @@ or a **system-wide TUN** — with automatic tiered failover.
     `connectionSummary` says "Connected" only when `Status.TunUp` is true: a working SOCKS route says nothing about the VPN. Its connection control is a clickable, pointer-cursor switch with the
     same track/thumb shape and state colors as Android, rather than a drag-only slider. Activity is a virtualized,
     2000-record view with severity/module/text filters (` & ` AND, ` | ` OR), presets, and click-to-copy.
+    Exit routes keeps its boxed Routing compatibility note in the fixed header below Recheck,
+    with a small danger-colored bordered `!`; the theme hover color is a darker shade of mint.
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
     desktop, and Android. `control.Event.Record` carries structured fields while `Line` preserves compatibility.
     Both embedded and standalone daemons route xray-core through the same hub; GUI mode no longer discards xray logs.
@@ -147,6 +150,11 @@ or a **system-wide TUN** — with automatic tiered failover.
 - `dist/` — prebuilt release binaries (**not committed**; build artifacts).
 
 ## Build & run
+
+`python build.py` prints the active Go configuration and builds desktop executables in `dist/`.
+General build messages persist; package progress occupies one replacing subline on a terminal,
+while compiler diagnostics are retained. Windows outputs both windowed and CLI executables;
+Wintun is embedded from the committed signed archive, so builds need no DLL download.
 ```
 go -C app build -o ../dist/clashvless .     # build the single binary
 go -C app run . [command]                   # run from source
@@ -415,7 +423,7 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
     routed into the tun (blocked or off-tun). ⚠️ Being a vendored patch, it is **wiped by any `go mod vendor`
     / xray-core+gVisor bump — re-apply both files afterward** (like `cmd/xhprobe` re-validation).
   Linux and macOS
-  are tested and working, and so is Windows, tested on 10 1909 (needs `wintun.dll` beside the exe). macOS uses a kernel-named `utunN` device and per-service DNS.
+  are tested and working, and so is Windows, tested on 10 1909. Windows builds embed the official signed Wintun 0.14.1 archive (`internal/tun/assets`); `tun.Prepare` extracts the architecture-matched DLL beside the executable only if missing, before the bridge starts (also used by `tunprobe`). The executable folder must be writable; distribution and first VPN startup work offline. macOS uses a kernel-named `utunN` device and per-service DNS.
 - **What can be hopped** (see README matrix + `cmd/xhprobe` lab): a **plain** main (`security=none`,
   e.g. `plain-444`) hops through **any** entry. A main with **its own REALITY** (xhttp / tcp-reality)
   can only hop through a **non-Vision** entry — a Vision entry splices/pads the stream and mangles the

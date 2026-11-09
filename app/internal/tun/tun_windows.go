@@ -16,8 +16,8 @@ import (
 
 // Supported reports that TUN mode is implemented on Windows.
 //
-// It needs wintun.dll next to the executable (xray's tun inbound
-// loads it to create the Wintun adapter) and an elevated (Administrator) process.
+// Prepare extracts the bundled wintun.dll next to the executable when missing.
+// Creating the adapter requires an elevated (Administrator) process.
 func Supported() bool { return true }
 
 // DefaultName is the TUN device name when none is configured. Wintun accepts any.

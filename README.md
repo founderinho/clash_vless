@@ -39,8 +39,9 @@ cd clash_vless
 python build.py
 ```
 
-On Windows the build downloads the official Wintun DLL (internet access required) into `dist`. It also creates `dist/clashvless.exe` as a native windowed application (no console window) and
-`dist/clashvless-cli.exe` for terminal commands. On other desktop platforms it creates `dist/clashvless`.
+On Windows Wintun is bundled inside each executable, so you can share a standalone `.exe`. The build creates `dist/clashvless.exe` as a native windowed application (no console window) and
+`dist/clashvless-cli.exe` for terminal commands. Windows x86 and x64 builds request administrator
+privileges at startup, so Windows may show a UAC prompt. On other desktop platforms it creates `dist/clashvless`.
 To build the Windows GUI directly:
 
 ```sh
@@ -174,7 +175,7 @@ route private ranges through the exit too.
   would otherwise loop xray's own traffic back into the tun; the main route table stays clean — no
   per-server routes), on **Windows/macOS** via explicit per-server bypass routes.
 - **Linux, Windows, and macOS.** All are tested and working. Windows was tested on Windows 10 1909.
-- **Windows** needs `wintun.dll` next to the executable; `build.py` downloads it from [wintun.net](https://www.wintun.net/).
+- **Windows** bundles the official signed Wintun 0.14.1 DLLs. When VPN mode starts, the app extracts the DLL for its architecture beside the executable if it is missing (the folder must be writable). Existing DLLs are preserved. No internet connection or separate DLL download is needed; share just the `.exe`.
 - **macOS** uses a kernel-named `utunN` device (xray requires the `utunN` form); the default is `utun9` —
   set `tun_name` to another `utunN` if that unit is busy.
 - **IPv4 only** — the tunnel doesn't carry IPv6. To stop dual-stack apps leaking out over v6, **IPv6 is

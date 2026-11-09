@@ -10,7 +10,8 @@ This folder is the shared, toolkit-independent visual identity for desktop, Andr
 - `png/` — pre-rendered transparent PNGs for Android and other non-SVG consumers.
 - `tokens.json` — portable colors, corner radii, and spacing values.
 - `branding.go` — embedded assets and Go color values; importing this package adds no UI dependency.
-- `app/icon_windows_amd64.syso` — generated from `windows/clashvless.rc` with `windres`; Go embeds it automatically in both Windows executables.
+- `windows/clashvless.manifest` — requests administrator privileges for the Windows executables.
+- `app/icon_windows_{amd64,386}.syso` — generated from `windows/clashvless.rc` with `windres`; Go embeds the icon and manifest in Windows x64 and x86 executables.
 
 The connected-node shield represents tiered routes. Mint indicates an active/healthy route, blue indicates the exit, and the neutral graphite surfaces keep connection information prominent.
 
