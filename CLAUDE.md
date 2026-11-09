@@ -168,7 +168,21 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
     (`stabBucketPct`) so only a *clear* stability gap overrides throughput; under-sampled nodes
     (`< minStabSamples`) sit mid-pack (`unknownFlakePct`) so the pick degrades gracefully on a cold start.
     **Within a band the tiebreak is mean throughput** (`meanSpeed`, rolling 1h of the rare speedtest sweep,
-    `speedWindow`), higher wins; **ping (`Latency`) is the fallback only when speed isn't measured for both
+    `speedWindow`), higher wins. The sweep (`runSpeeds`) measures each node **as an entry chained to the TUN slot's first hop-able
+    main** (`speedRefMain`), one test at a time — NOT the node as its own exit: a node can be fast alone yet crawl in
+    front of the main (its path to the main's server is throttled; measured 2026-11-05: 🇩🇪 22.8 Mbps alone vs 0.5
+    chained). Reachable-but-failed transfers score 0; a non-2xx reference reply (`ErrSpeedRefused`, e.g. Cloudflare
+    429 — all chained tests share the main's exit IP) rotates to the next `speedURLs` reference (Cloudflare → Hetzner fsn1 → OVH → Hetzner hel1) and retests the same
+    node; the sweep aborts (keeping prior samples) only if every reference refuses. Other failures count against the node
+    only once the current reference is *proven* this sweep (some node measured through it); before that the reference is
+    rotated instead, so a broken reference can't zero the whole pool. Speed requests send `speedUA` (curl UA) — Hetzner
+    closes Go's default UA with EOF. The one-time ping→speed upgrade (`liveBySpeed`) waits for a *completed* sweep with
+    measurements (`speedsSwept`) and only swaps to a strictly faster entry. **Escape hatch:** `NoSpeedTest` (`no_speedtest`, Config tab
+    "Speedtest sweep", picked up within one pool refresh via the `speedOff` atomic) stops sweeps — mid-sweep too — and makes
+    `meanSpeed` report every node unmeasured, so ranking falls straight back to stability + ping and no speed upgrade fires;
+    samples are kept and count again when switched back on. Live progress is `Status.Sweep` (set per node by `setSweep`, which also refreshes the pools' speeds so a
+    result shows the moment its test ends); the TUI renders a spinner on the node under test + `⚡ sweep N/M → <main>` on
+    Subs and Status (spinner ticks only while a sweep runs), and a measured-but-<1 Mbps node (`SpeedN>0`) in red. **Ping (`Latency`) is the fallback only when speed isn't measured for both
     candidates** (e.g. cold start, before the first sweep). The flake % is per-node (Country pool = T2,
     Bypass = T3) and shown in the TUI **Subs** tab: a per-node column plus a per-tier
     `flakiness 1h: T2 …·N  T3 …·N` summary; the Mbps column now shows the **mean**. Direct-egress probes are
@@ -217,6 +231,18 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
   and `applyDefaults` reserve both and require `p` **and** `p+1` free when assigning. Ports: default slot
   `ListenPort` (2084) + hop `+1` (2085), extra slots auto-assigned from `+2` up in steps of two
   (2086+hop 2087, 2088+hop 2089, …); egress probes use a throwaway OS-assigned port (`engine.freePort()`).
+  - **Hop stays up when the main is down** (`slotRunner.serveHopOnly`, `plan.hopOnly`/`slotRunner.hopOnly`,
+    `SlotStatus.HopOnly`): the hop port was served only *inside* a live chained config (T2/T3), so when no
+    main exit was reachable at all the whole instance (hop port included) went dark. Now, after the cascade
+    fails on **every** tier, the runner falls back to serving the **best reachable entry node directly** on
+    the hop port (`BuildConfig(entryPort, entryOB, nil, …)` — the entry as its own sole outbound), so an app
+    pointed at `Port+1` still egresses through the first hop even while the slot's main is dead. Only slots
+    that actually chain (a hop-capable, non-Vision main) and expose a distinct hop port qualify. The fallback
+    is **sticky** — while the entry port still egresses it isn't rebuilt — and it is **not** a live main
+    chain, so it gets no blip tolerance: each cycle still re-attempts a full chain (`bestWorking`) and
+    auto-upgrades the moment a main returns. State: `✖ DOWN` → `⚠ HOP-ONLY` (TUI header) / slot row `hop
+    <entry>`; truly `✖ DOWN` only when **no** entry reaches the internet either. The hop-only key is prefixed
+    `HOP:`.
 - **Force-hop** (`store.ForceHop`): skip T1 and always route through a hop (tier bounds → 2..3) —
   a quick "is any hop working?" test that keeps the hop-1 port served. `PinTier`/`PinEntry` still override.
 - **Chaining trick** (`xray.BuildConfig`): a chained `main` dials through the entry via outbound
@@ -384,6 +410,11 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
   connection's dest to the sniffed host, which **silently hijacks an app's HTTP `CONNECT`** (e.g. an app
   wiring its own HTTP proxy through our SOCKS/TUN: the `CONNECT proxytarget` is sniffed and rerouted to
   the target, bypassing the proxy → hang). Plain HTTPS is unaffected (TLS sniffs to the same SNI host).
+- **SOCKS5 UDP relay addresses are per-connection.** `socksInbound` deliberately leaves `settings.ip`
+  unset. Xray then answers UDP ASSOCIATE with the local address of that client's TCP connection:
+  loopback clients keep receiving `127.0.0.1`/`::1`, while LAN and container clients receive the
+  interface address they connected to. This also works with a wildcard listener; never restore a global
+  hard-coded relay address.
 - Keep code comments minimal: only a line for a constraint the code itself can't show.
 
 ## Doc rule (IMPORTANT)
