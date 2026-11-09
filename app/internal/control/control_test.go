@@ -3,6 +3,7 @@ package control
 import (
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -31,4 +32,22 @@ func TestLogEventCompatibility(t *testing.T) {
 	if decoded.Record == nil || decoded.Record.Level != loghub.Warning || decoded.Record.Module != "route" || decoded.Line == "" {
 		t.Fatalf("decoded event = %+v", decoded)
 	}
+}
+
+func TestListenAfterFailedDial(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "control.sock")
+	if c, err := Dial(sock); err == nil {
+		c.Close()
+		t.Fatal("dial with no server succeeded")
+	}
+	ln, err := Listen(sock)
+	if err != nil {
+		t.Fatalf("listen after failed dial: %v", err)
+	}
+	defer ln.Close()
+	c, err := Dial(sock)
+	if err != nil {
+		t.Fatalf("dial after listen: %v", err)
+	}
+	c.Close()
 }

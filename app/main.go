@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof" // registers /debug/pprof/* on DefaultServeMux (gated by CLASHVLESS_PPROF)
+	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
@@ -298,11 +299,11 @@ func cmdRun(st *store.State, debug bool) error {
 		sup.Logf(loghub.Warning, "config", "subscriptions", "no cached entry nodes; only direct exits are possible")
 	}
 	sock := st.ControlSocketPath()
-	go func() {
-		if err := control.NewServer(sup, hub).Serve(ctx, sock); err != nil {
-			sup.Logf(loghub.Error, "control", "server", "%v", err)
-		}
-	}()
+	if ln, err := control.Listen(sock); err != nil {
+		sup.Logf(loghub.Error, "control", "server", "%v", err)
+	} else {
+		go control.NewServer(sup, hub).Serve(ctx, ln)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -317,6 +318,9 @@ func cmdRun(st *store.State, debug bool) error {
 }
 
 func runGUI(st *store.State) error {
+	if err := appgui.Preflight(); err != nil {
+		return err
+	}
 	sock := st.ControlSocketPath()
 	embedded := false
 	client, err := control.Dial(sock)
@@ -324,12 +328,15 @@ func runGUI(st *store.State) error {
 		if errors.Is(err, os.ErrPermission) {
 			return fmt.Errorf("a daemon is already running on %s but owned by another user (root?) — attach as that user or restart the daemon", sock)
 		}
-		stop := startEmbeddedDaemon(st)
+		stop, err := startEmbeddedDaemon(st)
+		if err != nil {
+			return fmt.Errorf("could not start an in-process daemon on %s: %w", sock, err)
+		}
 		defer stop()
 		embedded = true
-		client = dialRetry(sock, 5*time.Second)
-		if client == nil {
-			return fmt.Errorf("could not start an in-process daemon on %s", sock)
+		client, err = control.Dial(sock)
+		if err != nil {
+			return fmt.Errorf("could not attach to the in-process daemon on %s: %w", sock, err)
 		}
 	}
 	defer client.Close()
@@ -355,50 +362,41 @@ func runTUI(st *store.State) error {
 			"  attach it as that user (`sudo clashvless`), or restart the daemon so it hands the\n"+
 			"  socket back to you (running it via `sudo clashvless run …` does this from v0.14.1)", sock)
 	}
-	stop := startEmbeddedDaemon(st)
+	stop, err := startEmbeddedDaemon(st)
+	if err != nil {
+		return fmt.Errorf("could not start an in-process daemon on %s: %w", sock, err)
+	}
 	defer stop()
-	client := dialRetry(sock, 5*time.Second)
-	if client == nil {
-		return fmt.Errorf("could not start an in-process daemon on %s", sock)
+	client, err := control.Dial(sock)
+	if err != nil {
+		return fmt.Errorf("could not attach to the in-process daemon on %s: %w", sock, err)
 	}
 	defer client.Close()
 	return tui.RunClient(client, true)
 }
 
 // startEmbeddedDaemon routes all engine and xray records to the attached UI,
-// keeping them away from stdout even when the host is a terminal dashboard.
-func startEmbeddedDaemon(st *store.State) func() {
+// keeping them away from stdout even when the host is a terminal dashboard. The
+// socket is bound before it returns, so the caller can dial straight away.
+func startEmbeddedDaemon(st *store.State) (func(), error) {
+	ln, err := control.Listen(st.ControlSocketPath())
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := control.NewHub()
 	onLog := func(record loghub.Record) { hub.Broadcast(control.LogEvent(record)) }
 	onStatus := func(s engine.Status) { hub.Broadcast(control.Event{Type: "status", Status: &s}) }
 	sup := engine.NewSupervisor(st, onStatus, onLog)
 	engine.SetLogSink(onLog)
-	_ = os.Remove(st.ControlSocketPath()) // clear any stale socket (no live daemon — Dial failed)
-	go func() {
-		if err := control.NewServer(sup, hub).Serve(ctx, st.ControlSocketPath()); err != nil {
-			sup.Logf(loghub.Error, "control", "server", "%v", err)
-		}
-	}()
+	go control.NewServer(sup, hub).Serve(ctx, ln)
 	go func() {
 		if err := sup.Run(ctx); err != nil {
 			sup.Logf(loghub.Error, "daemon", "lifecycle", "%v", err)
 		}
 	}()
 	sup.Logf(loghub.Info, "daemon", "lifecycle", "embedded engine started; SOCKS5 %s:%d", st.ListenHost(), st.ListenPort)
-	return cancel
-}
-
-// dialRetry polls the control socket until it accepts or the deadline passes.
-func dialRetry(sock string, d time.Duration) *control.Client {
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if c, err := control.Dial(sock); err == nil {
-			return c
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return nil
+	return cancel, nil
 }
 
 // cmdStatus prints one status snapshot from the running daemon.
@@ -842,7 +840,20 @@ func addMainCLI(st *store.State, u, slot string) error {
 		return err
 	}
 	fmt.Printf("✓ added to slot %q — %s\n", sl.Name, mainModeHint(u))
+	if looksCutOff(u) {
+		fmt.Println("⚠ no type= or security= in this URL, so it was saved as plain TCP. If your shell cut it at an unquoted &, it also lost the slot argument: remove it and re-add with the URL in quotes.")
+	}
 	return listMains(st)
+}
+
+// looksCutOff spots the stub left when a shell splits an unquoted URL at its first &.
+func looksCutOff(u string) bool {
+	p, err := url.Parse(u)
+	if err != nil {
+		return false
+	}
+	q := p.Query()
+	return !q.Has("type") && !q.Has("security")
 }
 
 func argOr(args []string, i int, def string) string {

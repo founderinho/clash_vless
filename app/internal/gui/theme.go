@@ -48,7 +48,7 @@ func (nativeTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) co
 	case theme.ColorNameError:
 		return colorDanger
 	default:
-		return theme.DefaultTheme().Color(name, variant)
+		return theme.DefaultTheme().Color(name, theme.VariantDark)
 	}
 }
 
