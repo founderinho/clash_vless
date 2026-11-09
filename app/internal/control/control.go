@@ -6,23 +6,30 @@ package control
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
 	"clashvless/internal/engine"
 	"clashvless/internal/happ"
+	"clashvless/internal/loghub"
 	"clashvless/internal/store"
 )
 
-// Event is a daemon→client message.
+// Event is a daemon→client message. Line keeps older clients compatible;
+// Record carries filterable severity and origin fields to current clients.
 type Event struct {
 	Type   string          `json:"type"` // "state" | "status" | "log"
 	State  json.RawMessage `json:"state,omitempty"`
 	Status *engine.Status  `json:"status,omitempty"`
 	Line   string          `json:"line,omitempty"`
+	Record *loghub.Record  `json:"record,omitempty"`
+}
+
+func LogEvent(record loghub.Record) Event {
+	return Event{Type: "log", Line: record.String(), Record: &record}
 }
 
 // Command is a client→daemon message.
@@ -148,7 +155,9 @@ func (s *Server) exec(cmd Command) {
 
 func (s *Server) applyAndBroadcast(mut func(*store.State)) {
 	s.sup.SetConfig(mut)
-	_ = s.sup.Save()
+	if err := s.sup.Save(); err != nil {
+		s.sup.Logf(loghub.Error, "config", "save", "could not save settings: %v", err)
+	}
 	s.sup.Kick()
 	s.hub.Broadcast(Event{Type: "state", State: s.sup.Snapshot()})
 }
@@ -156,6 +165,7 @@ func (s *Server) applyAndBroadcast(mut func(*store.State)) {
 func (s *Server) addSub(url string) {
 	var st store.State
 	_ = json.Unmarshal(s.sup.Snapshot(), &st)
+	s.sup.Logf(loghub.Info, "subscription", "fetch", "adding subscription")
 	nodes, title, err := happ.Fetch(st.Device, url, st.FetchProxyAddr())
 	s.applyAndBroadcast(func(st *store.State) {
 		st.AddSub(title, url)
@@ -166,9 +176,9 @@ func (s *Server) addSub(url string) {
 		}
 	})
 	if err != nil {
-		s.sup.Log(fmt.Sprintf("add %s: %v", url, err))
+		s.sup.Logf(loghub.Error, "subscription", "fetch", "add failed: %s", fetchError(err, url))
 	} else {
-		s.sup.Log(fmt.Sprintf("added %q — %d nodes", title, len(nodes)))
+		s.sup.Logf(loghub.Info, "subscription", "fetch", "added %q — %d nodes", title, len(nodes))
 	}
 }
 
@@ -204,7 +214,7 @@ func (s *Server) refetch() {
 		}
 	})
 	if len(ups) == 0 {
-		s.sup.Log("refetch: no subscriptions to fetch")
+		s.sup.Logf(loghub.Warning, "subscription", "fetch", "no subscriptions to refresh")
 	}
 	for _, u := range ups {
 		if u.ok {
@@ -212,11 +222,15 @@ func (s *Server) refetch() {
 			if name == "" {
 				name = u.url
 			}
-			s.sup.Log(fmt.Sprintf("refetched %q — %d nodes", name, len(u.nodes)))
+			s.sup.Logf(loghub.Info, "subscription", "fetch", "refreshed %q — %d nodes", name, len(u.nodes))
 		} else {
-			s.sup.Log(fmt.Sprintf("refetch %s: %v", u.url, u.err))
+			s.sup.Logf(loghub.Error, "subscription", "fetch", "refresh failed: %s", fetchError(u.err, u.url))
 		}
 	}
+}
+
+func fetchError(err error, subscriptionURL string) string {
+	return strings.ReplaceAll(err.Error(), subscriptionURL, "<subscription URL>")
 }
 
 // autoFetchLoop periodically refetches every subscription so the node set never

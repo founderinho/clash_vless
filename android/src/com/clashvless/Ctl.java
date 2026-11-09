@@ -17,7 +17,7 @@ final class Ctl {
 
     static volatile JSONObject state, status;
     static volatile boolean connected;
-    static volatile Listener listener;
+    static volatile Listener listener, notificationListener, tileListener;
     private static OutputStream out;
     private static boolean started;
 
@@ -69,6 +69,14 @@ final class Ctl {
     private static void fire(boolean stateChanged) {
         Listener l = listener;
         if (l != null) l.onUpdate(stateChanged);
+        l = notificationListener;
+        if (l != null) l.onUpdate(stateChanged);
+        l = tileListener;
+        if (l != null) l.onUpdate(stateChanged);
+    }
+
+    static void changed() {
+        fire(false);
     }
 
     static synchronized boolean send(JSONObject cmd) {
@@ -78,7 +86,7 @@ final class Ctl {
             out.flush();
             return true;
         } catch (Exception e) {
-            Core.log("control: " + cmd.optString("cmd") + " dropped — " + e.getMessage());
+            Core.log("control: " + cmd.optString("cmd") + " dropped - " + e.getMessage());
             return false;
         }
     }
@@ -93,7 +101,7 @@ final class Ctl {
         }
     }
 
-    /** Top-level state field replace — what the daemon's "patch" applies. */
+    /** Top-level state field replace - what the daemon's "patch" applies. */
     static boolean patch(String key, Object value) {
         try {
             return cmd("patch", "patch", new JSONObject().put(key, value));

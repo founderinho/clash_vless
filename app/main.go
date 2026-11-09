@@ -1,10 +1,7 @@
 // Command clashvless is the manager for a Happ-gated Remnawave subscription.
 //
-// This build implements the foundation: on-disk subscription STORAGE (stable
-// device identity + cached nodes + a configurable main outbound), a
-// Happ-mimicking FETCH, xray config assembly, and an in-process xray runner
-// (embedded → single binary). The Bubble Tea TUI, live health probing and the
-// failover supervisor land on top.
+// It includes subscription storage, a Happ-mimicking fetcher, an embedded xray
+// runner, tiered failover, and graphical/terminal dashboards over one control API.
 package main
 
 import (
@@ -25,7 +22,9 @@ import (
 
 	"clashvless/internal/control"
 	"clashvless/internal/engine"
+	appgui "clashvless/internal/gui"
 	"clashvless/internal/happ"
+	"clashvless/internal/loghub"
 	"clashvless/internal/store"
 	"clashvless/internal/tui"
 	"clashvless/internal/tun"
@@ -75,11 +74,11 @@ func run(args []string) error {
 	}
 	platformInit(st)
 
-	cmd := "tui" // bare `clashvless` launches the dashboard
+	cmd := "gui" // bare `clashvless` launches the graphical dashboard
 	if len(args) > 0 {
 		cmd = args[0]
 	}
-	if cli && (cmd == "tui" || cmd == "") {
+	if cli && (cmd == "gui" || cmd == "tui" || cmd == "") {
 		cmd = "run" // --cli forces headless mode
 	}
 
@@ -158,7 +157,10 @@ func run(args []string) error {
 	case "status":
 		return cmdStatus(st)
 
-	case "tui", "":
+	case "gui", "":
+		return runGUI(st)
+
+	case "tui":
 		return runTUI(st)
 
 	default:
@@ -184,7 +186,8 @@ func run(args []string) error {
 		fmt.Println("  gen [entry]      print the xray config for main, optionally chained via a cached node")
 		fmt.Println("  up [entry]       start xray in-process (chained via [entry] also exposes hop-1 on its own port)")
 		fmt.Println("  run              run the failover engine headless (auto T1→T2→T3, keep-alive)")
-		fmt.Println("  tui              launch the live dashboard (default with no args)")
+		fmt.Println("  gui              launch the graphical dashboard (default with no args)")
+		fmt.Println("  tui              launch the terminal dashboard")
 		fmt.Println("  whoami           show this device's identity (what the panel sees)")
 		fmt.Println("  hwid [<id>|new]  set the device HWID (paste another device's to share its panel slot) or mint a new one")
 		fmt.Println("flags: --config <path> (alt state file/dir)   --cli (headless)   --debug (events.log)")
@@ -264,12 +267,6 @@ func cmdRun(st *store.State, debug bool) error {
 	if err := platformTunFd(st); err != nil {
 		return err
 	}
-	if !st.AnyUsableMain() {
-		fmt.Println("note: no main yet — the daemon will idle (DOWN). Open the TUI to run setup: clashvless tui")
-	}
-	if len(st.ActiveNodes()) == 0 {
-		fmt.Println("note: no cached nodes — only T1 (direct main) is possible until you add/fetch a sub.")
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -284,19 +281,26 @@ func cmdRun(st *store.State, debug bool) error {
 	}
 
 	hub := control.NewHub()
-	sink := func(l string) { fmt.Println("  ·", l) }
+	sink := func(record loghub.Record) { fmt.Println(record.String()) }
 	if debug {
 		sink = engine.EventFileSink(st.EventsLogPath(), sink)
 		fmt.Println("debug: mirroring events →", st.EventsLogPath())
 	}
-	onLog := func(l string) { sink(l); hub.Broadcast(control.Event{Type: "log", Line: l}) }
+	onLog := func(record loghub.Record) { sink(record); hub.Broadcast(control.LogEvent(record)) }
 	onStatus := func(s engine.Status) { printStatus(s); hub.Broadcast(control.Event{Type: "status", Status: &s}) }
 
 	sup := engine.NewSupervisor(st, onStatus, onLog)
+	engine.SetLogSink(onLog)
+	if !st.AnyUsableMain() {
+		sup.Logf(loghub.Warning, "config", "routes", "no usable exit; add or enable one in Exit routes")
+	}
+	if len(st.ActiveNodes()) == 0 {
+		sup.Logf(loghub.Warning, "config", "subscriptions", "no cached entry nodes; only direct exits are possible")
+	}
 	sock := st.ControlSocketPath()
 	go func() {
 		if err := control.NewServer(sup, hub).Serve(ctx, sock); err != nil {
-			fmt.Fprintln(os.Stderr, "control server:", err)
+			sup.Logf(loghub.Error, "control", "server", "%v", err)
 		}
 	}()
 
@@ -304,12 +308,32 @@ func cmdRun(st *store.State, debug bool) error {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sig
-		fmt.Println("\n■ stopping.")
+		sup.Logf(loghub.Info, "daemon", "lifecycle", "stopping")
 		cancel()
 	}()
 
-	fmt.Printf("▶ daemon: socks5://%s:%d · control %s — Ctrl-C to stop\n", st.ListenHost(), st.ListenPort, sock)
+	sup.Logf(loghub.Info, "daemon", "lifecycle", "started; SOCKS5 %s:%d; control %s", st.ListenHost(), st.ListenPort, sock)
 	return sup.Run(ctx)
+}
+
+func runGUI(st *store.State) error {
+	sock := st.ControlSocketPath()
+	embedded := false
+	client, err := control.Dial(sock)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return fmt.Errorf("a daemon is already running on %s but owned by another user (root?) — attach as that user or restart the daemon", sock)
+		}
+		stop := startEmbeddedDaemon(st)
+		defer stop()
+		embedded = true
+		client = dialRetry(sock, 5*time.Second)
+		if client == nil {
+			return fmt.Errorf("could not start an in-process daemon on %s", sock)
+		}
+	}
+	defer client.Close()
+	return appgui.RunClient(client, embedded)
 }
 
 // runTUI attaches the TUI to a running daemon. If none is running, it starts an
@@ -341,19 +365,27 @@ func runTUI(st *store.State) error {
 	return tui.RunClient(client, true)
 }
 
-// startEmbeddedDaemon runs the supervisor + control server in-process with silent
-// sinks (output goes to the TUI over the socket, not stdout). Returns a stop func.
+// startEmbeddedDaemon routes all engine and xray records to the attached UI,
+// keeping them away from stdout even when the host is a terminal dashboard.
 func startEmbeddedDaemon(st *store.State) func() {
-	engine.SetLogSink(func(string) {}) // xray-core must not write to the terminal (TUI owns it)
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := control.NewHub()
-	onLog := func(l string) { hub.Broadcast(control.Event{Type: "log", Line: l}) }
+	onLog := func(record loghub.Record) { hub.Broadcast(control.LogEvent(record)) }
 	onStatus := func(s engine.Status) { hub.Broadcast(control.Event{Type: "status", Status: &s}) }
 	sup := engine.NewSupervisor(st, onStatus, onLog)
-	sup.SetQuiet(true)                    // xray must not write to the terminal — the TUI owns the screen
+	engine.SetLogSink(onLog)
 	_ = os.Remove(st.ControlSocketPath()) // clear any stale socket (no live daemon — Dial failed)
-	go func() { _ = control.NewServer(sup, hub).Serve(ctx, st.ControlSocketPath()) }()
-	go func() { _ = sup.Run(ctx) }()
+	go func() {
+		if err := control.NewServer(sup, hub).Serve(ctx, st.ControlSocketPath()); err != nil {
+			sup.Logf(loghub.Error, "control", "server", "%v", err)
+		}
+	}()
+	go func() {
+		if err := sup.Run(ctx); err != nil {
+			sup.Logf(loghub.Error, "daemon", "lifecycle", "%v", err)
+		}
+	}()
+	sup.Logf(loghub.Info, "daemon", "lifecycle", "embedded engine started; SOCKS5 %s:%d", st.ListenHost(), st.ListenPort)
 	return cancel
 }
 
