@@ -478,7 +478,7 @@ func (s *Supervisor) speedRefMain() (namedOB, bool) {
 		mains = sl.HopMains()
 	}
 	s.mu.Unlock()
-	if obs := namedOutbounds(mains); len(obs) > 0 {
+	if obs := s.namedOutbounds(mains); len(obs) > 0 {
 		return obs[0], true
 	}
 	return namedOB{}, false
@@ -729,8 +729,8 @@ func (r *slotRunner) cycle(ctx context.Context) {
 	pin := r.sup.st.PinEntry
 	r.sup.mu.Unlock()
 
-	directOB := r.namedOutbounds(directMains)
-	hopOB := r.namedOutbounds(hopMains)
+	directOB := r.sup.namedOutbounds(directMains)
+	hopOB := r.sup.namedOutbounds(hopMains)
 	if len(directOB) == 0 && len(hopOB) == 0 {
 		r.emit(0, "", 0, "no usable main — add/enable one in this slot", "")
 		return
@@ -1017,12 +1017,12 @@ type namedOB struct {
 	ob   json.RawMessage
 }
 
-func (r *slotRunner) namedOutbounds(mains []store.Main) []namedOB {
+func (s *Supervisor) namedOutbounds(mains []store.Main) []namedOB {
 	var out []namedOB
 	for _, m := range mains {
 		ob, err := xray.VlessToOutbound(m.URL, "main")
 		if err != nil {
-			r.errorf("invalid exit %q: %v", m.Name, err)
+			s.Logf(loghub.Error, "route", m.Name, "invalid exit %q: %v", m.Name, err)
 			continue
 		}
 		out = append(out, namedOB{name: m.Name, ob: ob})
