@@ -95,8 +95,14 @@ func oemString(b []byte) string {
 	return windows.UTF16ToString(wide)
 }
 
+func command(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &windows.SysProcAttr{HideWindow: true, CreationFlags: windows.CREATE_NO_WINDOW}
+	return cmd
+}
+
 func (m *Manager) run(name string, args ...string) error {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	out, err := command(name, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(oemString(out)))
 	}
@@ -312,7 +318,7 @@ func HealStaleResolver() (bool, string) { return false, "" }
 // routing table (`route print` shows a 0.0.0.0 and a 128.0.0.0 dest, each with a
 // 128.0.0.0 mask).
 func (m *Manager) captureIntact() bool {
-	out, err := exec.Command("route", "print", "-4").Output()
+	out, err := command("route", "print", "-4").Output()
 	if err != nil {
 		return true // can't tell — assume intact rather than churn the table
 	}
@@ -353,7 +359,7 @@ func ifaceByName(name string) (int, error) {
 // defaultGateway parses `route print -4` for the active 0.0.0.0/0 gateway with
 // the lowest metric.
 func defaultGateway() (string, error) {
-	out, err := exec.Command("route", "print", "-4", "0.0.0.0").Output()
+	out, err := command("route", "print", "-4", "0.0.0.0").Output()
 	if err != nil {
 		return "", err
 	}
