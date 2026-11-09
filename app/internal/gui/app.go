@@ -27,6 +27,7 @@ import (
 )
 
 type dashboard struct {
+	dialogOpen      bool
 	logRefresh      func() // re-filters the Activity list; only valid while that page is shown
 	scroll          *container.Scroll
 	scrollPage      string
@@ -161,7 +162,7 @@ func (d *dashboard) navigate(page string) {
 }
 
 func (d *dashboard) render() {
-	if d.state == nil {
+	if d.state == nil || d.dialogOpen {
 		return
 	}
 	prevScroll, prevPage := d.scroll, d.scrollPage
@@ -274,6 +275,9 @@ func (d *dashboard) updateSlots(mutate func([]store.Slot)) {
 }
 
 func (d *dashboard) ask(title, label, initial, confirm string, apply func(string)) {
+	if d.dialogOpen {
+		return
+	}
 	entry := widget.NewEntry()
 	entry.SetText(initial)
 	form := dialog.NewForm(title, confirm, "Cancel", []*widget.FormItem{widget.NewFormItem(label, entry)}, func(ok bool) {
@@ -282,15 +286,29 @@ func (d *dashboard) ask(title, label, initial, confirm string, apply func(string
 		}
 	}, d.window)
 	form.Resize(fyne.NewSize(520, 150))
-	form.Show()
+	d.showDialog(form)
 }
 
 func (d *dashboard) confirm(title, message string, apply func()) {
-	dialog.ShowConfirm(title, message, func(ok bool) {
+	if d.dialogOpen {
+		return
+	}
+	form := dialog.NewConfirm(title, message, func(ok bool) {
 		if ok {
 			apply()
 		}
 	}, d.window)
+	d.showDialog(form)
+}
+
+func (d *dashboard) showDialog(form dialog.Dialog) {
+	// Keep the underlying widget tree stable until the modal releases focus.
+	d.dialogOpen = true
+	form.SetOnClosed(func() {
+		d.dialogOpen = false
+		d.render()
+	})
+	form.Show()
 }
 
 func (d *dashboard) addSubscription() {
@@ -304,16 +322,24 @@ func (d *dashboard) addSubscription() {
 }
 
 func (d *dashboard) addMain(slotIndex int) {
+	if d.state == nil || slotIndex < 0 || slotIndex >= len(d.state.Slots) {
+		d.notify("This slot no longer exists")
+		return
+	}
+	slotName := d.state.Slots[slotIndex].Name
 	d.ask("Add final exit", "VLESS URL", "", "Add", func(value string) {
 		parsed, err := url.Parse(value)
 		if err != nil || parsed.Scheme != "vless" || parsed.Hostname() == "" {
 			d.notify("Enter a valid vless:// URL")
 			return
 		}
+		index := d.state.SlotIndexByName(slotName)
+		if index < 0 {
+			d.notify("This slot was removed while editing")
+			return
+		}
 		d.updateSlots(func(slots []store.Slot) {
-			if slotIndex >= 0 && slotIndex < len(slots) {
-				slots[slotIndex].AddMain(value)
-			}
+			slots[index].AddMain(value)
 		})
 	})
 }
@@ -379,8 +405,16 @@ func wrappingMuted(value string) *widget.Label {
 }
 
 func ellipsized(value string) *widget.Label {
-	label := widget.NewLabel(value)
+	// Paragraph separators can make Fyne's single-line truncator exhaust its glyph runs.
+	label := widget.NewLabel(strings.Join(strings.Fields(value), " "))
 	label.Truncation = fyne.TextTruncateEllipsis
+	return label
+}
+
+func mutedLine(value string) *widget.Label {
+	label := ellipsized(value)
+	label.Importance = widget.LowImportance
+	label.SizeName = theme.SizeNameCaptionText
 	return label
 }
 

@@ -255,9 +255,11 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 			d.updateSlots(func(slots []store.Slot) { slots[slotIndex].Enabled = on })
 		})
 		enabled.Checked = slot.Enabled
+		slotTitle := ellipsized(slot.Name)
+		slotTitle.TextStyle = fyne.TextStyle{Bold: true}
 		rows := []fyne.CanvasObject{
 			flexRow(
-				container.NewVBox(strong(slot.Name), muted(fmt.Sprintf("Port %d · %s", slot.Port, live))),
+				container.NewVBox(slotTitle, mutedLine(fmt.Sprintf("Port %d · %s", slot.Port, live))),
 				enabled,
 			),
 			container.NewHBox(
@@ -281,7 +283,7 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 			})
 			direct.Checked = main.AllowNoHop
 			rows = append(rows, widget.NewSeparator(), flexRow(
-				container.NewVBox(ellipsized(main.Name), muted(mainHost(main.URL)+" · "+store.ProtoTag(main.URL))),
+				container.NewVBox(ellipsized(main.Name), mutedLine(mainHost(main.URL)+" · "+store.ProtoTag(main.URL))),
 				widget.NewButtonWithIcon("", theme.DeleteIcon(), func() { d.removeMain(slotIndex, mainIndex) }),
 			), container.NewHBox(exitEnabled, direct))
 		}

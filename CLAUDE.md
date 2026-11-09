@@ -19,6 +19,15 @@ or a **system-wide TUN** — with automatic tiered failover.
     2000-record view with severity/module/text filters (` & ` AND, ` | ` OR), presets, and click-to-copy.
     Exit routes keeps its boxed Routing compatibility note in the fixed header below Recheck,
     with a small danger-colored bordered `!`; the theme hover color is a darker shade of mint.
+    Modal forms pause page rebuilding while state/status events continue updating the model;
+    closing a form renders the latest state. Adding an exit retains the target slot's name
+    across state updates and safely rejects a removed slot. GUI panics are saved to `crash.log`
+    beside `state.json`, including fatal background-goroutine panics in windowed builds.
+    Single-line ellipsized display labels collapse whitespace, including Unicode paragraph
+    separators: Fyne's truncator can otherwise panic when shaping stops at a paragraph boundary.
+    Stored exit names and VLESS URLs remain unchanged.
+    Exit routes uses ellipsized labels for slot titles, live route summaries, and server addresses,
+    so long names or VLESS text cannot increase the window's minimum width after a connection.
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
     desktop, and Android. `control.Event.Record` carries structured fields while `Line` preserves compatibility.
     Both embedded and standalone daemons route xray-core through the same hub; GUI mode no longer discards xray logs.

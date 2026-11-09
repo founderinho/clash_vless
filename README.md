@@ -51,6 +51,9 @@ go -C app build -ldflags="-H=windowsgui" -o ../dist/clashvless.exe .
 The GUI needs cgo and OpenGL. With `CGO_ENABLED=0` you get the same binary without the GUI, where bare
 `clashvless` opens the terminal dashboard. That is also the way to cross-compile for macOS from another OS.
 
+GUI crashes are recorded in `crash.log` beside `state.json` (on Windows, normally
+`%APPDATA%\clash_vless\crash.log`), so windowed builds retain panic details without a console.
+
 ## Brand assets
 
 The reusable Route Signal identity lives in [`app/branding`](app/branding): vector logo, custom SVG icons,

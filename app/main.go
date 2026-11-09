@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"clashvless/internal/control"
+	"clashvless/internal/crashlog"
 	"clashvless/internal/engine"
 	appgui "clashvless/internal/gui"
 	"clashvless/internal/happ"
@@ -327,6 +329,10 @@ func cmdRun(st *store.State, debug bool) error {
 // runGUI opens the dashboard. A bare launch (no command) falls back to the TUI where
 // no GUI can run; an explicit `gui` reports why instead.
 func runGUI(st *store.State, bare bool) (err error) {
+	crashPath := filepath.Join(filepath.Dir(st.FilePath()), "crash.log")
+	if stop, err := crashlog.Enable(crashPath); err == nil {
+		defer stop()
+	}
 	if err := appgui.Preflight(); err != nil {
 		if bare && errors.Is(err, appgui.ErrUnavailable) {
 			return runTUI(st)
@@ -336,6 +342,7 @@ func runGUI(st *store.State, bare bool) (err error) {
 	defer func() {
 		// The toolkit panics when it can't open a display (e.g. a dead X forward).
 		if r := recover(); r != nil {
+			crashlog.Recovered(crashPath, r)
 			err = fmt.Errorf("could not open the GUI (%v) — use `clashvless tui`", r)
 		}
 	}()
