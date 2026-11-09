@@ -34,6 +34,12 @@ func readConInputs(ctx context.Context, msgsch chan<- Msg, con *conInputReader) 
 			var msgs []Msg
 			switch e := event.Unwrap().(type) {
 			case coninput.KeyEventRecord:
+				// clashvless: a char missing from the active layout (@ & # on Russian)
+				// arrives as Alt+numpad, with the char only on the Alt key-up.
+				if !e.KeyDown && e.VirtualKeyCode == coninput.VK_MENU && e.Char != 0 {
+					msgs = append(msgs, KeyMsg{Type: KeyRunes, Runes: []rune{e.Char}})
+					break
+				}
 				if !e.KeyDown || e.VirtualKeyCode == coninput.VK_SHIFT {
 					continue
 				}

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -72,6 +73,7 @@ type model struct {
 	cfgCursor   int
 	mainCursor  int // Main tab: index into the flattened slot/main rows
 	addMainSlot int // Main tab: slot index a new main is added to
+	lastKey     time.Time
 	portSlot    int // Main tab: slot index whose port is being edited
 	rowCursor   int // Subs tab: index into the flattened sub/node rows
 	rowScroll   int
@@ -164,6 +166,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // --- key handling ------------------------------------------------------------
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if !m.inTextInput() {
+		if m.inKeyBurst(msg, time.Now()) {
+			m.busy = "pasted text ignored — press a to add a main first"
+			return m, nil
+		}
+		msg = latinKey(msg)
+	}
 	// "exit? y/n" prompt takes over the whole UI once armed.
 	if m.confirmExit {
 		switch msg.String() {
@@ -241,6 +250,10 @@ func (m *model) handleInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addMain(sanitizeURL(raw))
 		case inputAddSlot:
 			name := strings.TrimSpace(raw)
+			if strings.Contains(name, "://") {
+				m.busy = "that's a URL, not a slot name — press a to add a main"
+				return m, nil
+			}
 			m.apply(func(st *store.State) { st.AddSlot(name) })
 			m.busy = "slot added"
 		case inputSlotPort:
@@ -299,6 +312,43 @@ func sanitizeURL(s string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// keyBurstGap is faster than key repeat or typing. Windows delivers a paste key by
+// key with no paste marker, so a burst is the only way to tell it from shortcuts.
+const keyBurstGap = 10 * time.Millisecond
+
+// inKeyBurst reports whether a key outside text input belongs to a paste.
+func (m *model) inKeyBurst(msg tea.KeyMsg, now time.Time) bool {
+	if msg.Type != tea.KeyRunes && msg.Type != tea.KeyEnter {
+		return false
+	}
+	burst := now.Sub(m.lastKey) < keyBurstGap
+	m.lastKey = now
+	return burst
+}
+
+var ruToLatin = map[rune]rune{
+	'й': 'q', 'ц': 'w', 'у': 'e', 'к': 'r', 'е': 't', 'н': 'y', 'г': 'u', 'ш': 'i', 'щ': 'o', 'з': 'p',
+	'ф': 'a', 'ы': 's', 'в': 'd', 'а': 'f', 'п': 'g', 'р': 'h', 'о': 'j', 'л': 'k', 'д': 'l',
+	'я': 'z', 'ч': 'x', 'с': 'c', 'м': 'v', 'и': 'b', 'т': 'n', 'ь': 'm',
+}
+
+// latinKey makes shortcuts work on a Russian layout, where the a key sends ф.
+func latinKey(msg tea.KeyMsg) tea.KeyMsg {
+	if msg.Type != tea.KeyRunes || len(msg.Runes) != 1 {
+		return msg
+	}
+	r := msg.Runes[0]
+	l, ok := ruToLatin[unicode.ToLower(r)]
+	if !ok {
+		return msg
+	}
+	if unicode.IsUpper(r) {
+		l = unicode.ToUpper(l)
+	}
+	msg.Runes = []rune{l}
+	return msg
 }
 
 // inTextInput reports whether a keypress should be treated as text (so `q` is a
@@ -542,7 +592,7 @@ type strField struct {
 	set   func(*store.State, string)
 	empty string // shown when the value is unset
 	note  string
-	hint  string // status-line prompt while editing
+	hint  string            // status-line prompt while editing
 	check func(string) bool // optional validator; on failure the status line shows bad
 	bad   string
 }

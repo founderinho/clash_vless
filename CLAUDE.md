@@ -24,13 +24,20 @@ or a **system-wide TUN** — with automatic tiered failover.
     existing ancestor owned by a non-root user (the config lives under the user's home) and chown to it.
     Without this, a systemd-run root daemon left `control.sock` root-owned and every rootless attach got
     `EACCES`. And `runTUI` no longer deletes a socket it only got `EACCES` on (that used to clobber a live
-    root daemon) — it errors with guidance.
+    root daemon) — it errors with guidance. **Bind before dialing** (`control.Listen`, then `Server.Serve(ctx, ln)`):
+    on Windows a `connect()` to a missing AF_UNIX path **creates a 0-byte file there**, and `bind()` then fails with
+    "address in use", so the old dial-retry racing `Remove`+`Listen` kept the embedded TUI from starting. A client
+    dialing with no daemon (e.g. `status`) leaves that file behind; `Listen` clears it.
   - `internal/tui` — Bubble Tea dashboard client (Status / Subs / Main / Log / Config); `wizard.go`
     is the first-run setup wizard (sub → proxy → HWID → fetch → review → exit, with a non-plain warning).
     The **Main** tab is now a **slots** view: each slot shows its port, on/off, TUN marker (◉) and live tier,
     with its mains nested; keys `s` add slot · `a` add main · `p` port · `t` TUN slot · `e` enable · `w` w/o-hop
     · `d` delete. Mains & sub nodes show a proto tag (`store.ProtoTag`/`OutboundProtoTag`:
     plain·reality·vision·grpc·ws·tls·xhttp). The Config tab has a **TUN mode** toggle.
+    Outside text input, `handleKey` maps Russian-layout runes to their Latin shortcuts (`latinKey`: `ф` → `a`) and
+    drops key bursts (`inKeyBurst`, gaps under `keyBurstGap`). Windows delivers a paste key by key with no paste
+    marker, so a `vless://` pasted outside text input used to run as shortcuts: `e` toggled the slot off and `s`
+    opened "add slot", naming a junk slot after the rest of the URL. Slot names containing `://` are also rejected.
   - `internal/tun` — TUN mode OS layer (Linux `ip`/`resolvectl`, Windows `netsh`/`route`, macOS
     `route`/`networksetup`; stub on other OSes). Moves the default route onto the device and keeps **xray's
     own sockets off the tunnel** so the live exit AND the failover probes reach servers directly — on Linux
@@ -49,13 +56,16 @@ or a **system-wide TUN** — with automatic tiered failover.
     printing PASS/FAIL. Proves why chaining uses dialerProxy; re-run after any xray-core bump.
   - `cmd/tunprobe` — root/admin-only lab: starts JUST the TUN bridge, confirms xray creates the device,
     then tears down **without touching routing** (safe). Answers "does the native tun inbound work here?".
-- `app/vendor/` — vendored deps (committed; builds are hermetic/offline). Holds **two local patches**
+- `app/vendor/` — vendored deps (committed; builds are hermetic/offline). Holds **three local patches**
   (grep `clashvless`): (1) gVisor `network/ipv4` echo-reply gate for TUN ping — see **ICMP ping**; (2)
   `transport/internet/grpc/dial.go` **content-keys** the global gRPC client-conn cache. It was keyed by the
   `*MemoryStreamConfig` **pointer**, so each failover probe (a fresh throwaway instance → fresh pointer) missed
   the cache and stored a **new, never-closed `grpc.ClientConn`** (+ its goroutines) into an insert-only global
   map → ~2 GB/day leak with gRPC entry nodes. The patch hashes dest+transport+security+socket settings so all
-  probes/live dials to one node share **one bounded** conn. Re-apply **both** after any re-vendor.
+  probes/live dials to one node share **one bounded** conn; (3) bubbletea `key_windows.go` emits the char carried
+  on an Alt **key-up**: for a char missing from the active layout (`@ & #` on Russian) the Windows console
+  synthesizes Alt+numpad and delivers it only there, and bubbletea dropped all key-ups, so a pasted `vless://` lost
+  its `@`/`&` and "add main" failed as an invalid URL. Re-apply **all three** after any re-vendor.
 - `android/` — **Android app** (minimal UX, core only). No Gradle: `android/build.sh` does
   go → javac → d8 → aapt2 → zipalign → apksigner into `dist/clashvless.apk`. **minSdk 24** (Android 7; API-26
   calls are version-guarded), target 34. ABIs: **arm64** + **armeabi-v7a**, both built **with cgo** via the NDK's

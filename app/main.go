@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof" // registers /debug/pprof/* on DefaultServeMux (gated by CLASHVLESS_PPROF)
+	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
@@ -294,11 +295,11 @@ func cmdRun(st *store.State, debug bool) error {
 
 	sup := engine.NewSupervisor(st, onStatus, onLog)
 	sock := st.ControlSocketPath()
-	go func() {
-		if err := control.NewServer(sup, hub).Serve(ctx, sock); err != nil {
-			fmt.Fprintln(os.Stderr, "control server:", err)
-		}
-	}()
+	if ln, err := control.Listen(sock); err != nil {
+		fmt.Fprintln(os.Stderr, "control server:", err)
+	} else {
+		go control.NewServer(sup, hub).Serve(ctx, ln)
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
@@ -331,42 +332,37 @@ func runTUI(st *store.State) error {
 			"  attach it as that user (`sudo clashvless`), or restart the daemon so it hands the\n"+
 			"  socket back to you (running it via `sudo clashvless run …` does this from v0.14.1)", sock)
 	}
-	stop := startEmbeddedDaemon(st)
+	stop, err := startEmbeddedDaemon(st)
+	if err != nil {
+		return fmt.Errorf("could not start an in-process daemon on %s: %w", sock, err)
+	}
 	defer stop()
-	client := dialRetry(sock, 5*time.Second)
-	if client == nil {
-		return fmt.Errorf("could not start an in-process daemon on %s", sock)
+	client, err := control.Dial(sock)
+	if err != nil {
+		return fmt.Errorf("could not attach to the in-process daemon on %s: %w", sock, err)
 	}
 	defer client.Close()
 	return tui.RunClient(client, true)
 }
 
 // startEmbeddedDaemon runs the supervisor + control server in-process with silent
-// sinks (output goes to the TUI over the socket, not stdout). Returns a stop func.
-func startEmbeddedDaemon(st *store.State) func() {
+// sinks (output goes to the TUI over the socket, not stdout). The socket is bound
+// before it returns, so the caller can dial straight away. Returns a stop func.
+func startEmbeddedDaemon(st *store.State) (func(), error) {
+	ln, err := control.Listen(st.ControlSocketPath())
+	if err != nil {
+		return nil, err
+	}
 	engine.SetLogSink(func(string) {}) // xray-core must not write to the terminal (TUI owns it)
 	ctx, cancel := context.WithCancel(context.Background())
 	hub := control.NewHub()
 	onLog := func(l string) { hub.Broadcast(control.Event{Type: "log", Line: l}) }
 	onStatus := func(s engine.Status) { hub.Broadcast(control.Event{Type: "status", Status: &s}) }
 	sup := engine.NewSupervisor(st, onStatus, onLog)
-	sup.SetQuiet(true)                    // xray must not write to the terminal — the TUI owns the screen
-	_ = os.Remove(st.ControlSocketPath()) // clear any stale socket (no live daemon — Dial failed)
-	go func() { _ = control.NewServer(sup, hub).Serve(ctx, st.ControlSocketPath()) }()
+	sup.SetQuiet(true) // xray must not write to the terminal — the TUI owns the screen
+	go control.NewServer(sup, hub).Serve(ctx, ln)
 	go func() { _ = sup.Run(ctx) }()
-	return cancel
-}
-
-// dialRetry polls the control socket until it accepts or the deadline passes.
-func dialRetry(sock string, d time.Duration) *control.Client {
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if c, err := control.Dial(sock); err == nil {
-			return c
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return nil
+	return cancel, nil
 }
 
 // cmdStatus prints one status snapshot from the running daemon.
@@ -810,7 +806,20 @@ func addMainCLI(st *store.State, u, slot string) error {
 		return err
 	}
 	fmt.Printf("✓ added to slot %q — %s\n", sl.Name, mainModeHint(u))
+	if looksCutOff(u) {
+		fmt.Println("⚠ no type= or security= in this URL, so it was saved as plain TCP. If your shell cut it at an unquoted &, it also lost the slot argument: remove it and re-add with the URL in quotes.")
+	}
 	return listMains(st)
+}
+
+// looksCutOff spots the stub left when a shell splits an unquoted URL at its first &.
+func looksCutOff(u string) bool {
+	p, err := url.Parse(u)
+	if err != nil {
+		return false
+	}
+	q := p.Query()
+	return !q.Has("type") && !q.Has("security")
 }
 
 func argOr(args []string, i int, def string) string {

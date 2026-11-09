@@ -76,19 +76,12 @@ type Server struct {
 
 func NewServer(sup *engine.Supervisor, hub *Hub) *Server { return &Server{sup: sup, hub: hub} }
 
-// Serve listens on socketPath until ctx is cancelled.
-func (s *Server) Serve(ctx context.Context, socketPath string) error {
-	_ = os.Remove(socketPath) // clear a stale socket
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		return err
-	}
-	_ = os.Chmod(socketPath, 0o600)
-	store.ReownToInvoker(socketPath) // sudo daemon → let the rootless TUI attach
+// Serve accepts clients on ln until ctx is cancelled.
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	go func() {
 		<-ctx.Done()
 		ln.Close()
-		_ = os.Remove(socketPath)
+		_ = os.Remove(ln.Addr().String())
 	}()
 	go s.autoFetchLoop(ctx)
 	for {
@@ -98,6 +91,19 @@ func (s *Server) Serve(ctx context.Context, socketPath string) error {
 		}
 		go s.handle(conn)
 	}
+}
+
+// Listen binds the control socket. Bind before dialing it: on Windows a connect to
+// a missing path creates a file there, and bind then fails with "address in use".
+func Listen(socketPath string) (net.Listener, error) {
+	_ = os.Remove(socketPath) // clear a stale socket
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return nil, err
+	}
+	_ = os.Chmod(socketPath, 0o600)
+	store.ReownToInvoker(socketPath) // sudo daemon → let the rootless TUI attach
+	return ln, nil
 }
 
 func (s *Server) handle(conn net.Conn) {
