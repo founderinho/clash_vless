@@ -334,7 +334,7 @@ func runGUI(st *store.State, bare bool) (err error) {
 		defer stop()
 	}
 	if err := appgui.Preflight(); err != nil {
-		if bare && errors.Is(err, appgui.ErrUnavailable) {
+		if bare && errors.Is(err, appgui.ErrUnavailable) && hasConsole() {
 			return runTUI(st)
 		}
 		return err
