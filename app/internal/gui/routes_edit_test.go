@@ -246,3 +246,72 @@ func TestRoutesKeepWindowWidthWithLongDetails(t *testing.T) {
 		})
 	}
 }
+
+func TestSlotDisplaysSelectedForVPN(t *testing.T) {
+	d, commands := routesDashboard(t)
+	d.render()
+
+	labels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		l, ok := obj.(*widget.Label)
+		return ok && strings.Contains(l.Text, "VPN slot")
+	})
+	if len(labels) != 1 {
+		t.Fatalf("expected 1 label with 'VPN slot', got %d", len(labels))
+	}
+	if !strings.Contains(labels[0].(*widget.Label).Text, "Port 2084") {
+		t.Fatalf("expected 'first' slot (Port 2084) to be selected for VPN, got %q", labels[0].(*widget.Label).Text)
+	}
+
+	selectedBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && b.Text == "Selected for VPN"
+	})
+	if len(selectedBtns) != 1 {
+		t.Fatalf("expected 1 'Selected for VPN' button, got %d", len(selectedBtns))
+	}
+	if !selectedBtns[0].(*widget.Button).Disabled() {
+		t.Fatal("expected 'Selected for VPN' button to be disabled")
+	}
+
+	useBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && b.Text == "Use for VPN"
+	})
+	if len(useBtns) != 2 {
+		t.Fatalf("expected 2 'Use for VPN' buttons, got %d", len(useBtns))
+	}
+
+	test.Tap(useBtns[0].(*widget.Button))
+	applyRoutePatch(t, d, commands)
+
+	if d.state.TunSlotName() != "second" {
+		t.Fatalf("expected tun_slot to be 'second', got %q", d.state.TunSlotName())
+	}
+
+	labelsAfter := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		l, ok := obj.(*widget.Label)
+		return ok && strings.Contains(l.Text, "VPN slot")
+	})
+	if len(labelsAfter) != 1 || !strings.Contains(labelsAfter[0].(*widget.Label).Text, "Port 2086") {
+		t.Fatalf("expected 'second' slot (Port 2086) to display 'VPN slot', got %+v", labelsAfter)
+	}
+
+	d.navigate("overview")
+	overviewLabels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		l, ok := obj.(*widget.Label)
+		return ok && strings.Contains(l.Text, "VPN slot")
+	})
+	if len(overviewLabels) != 1 || !strings.Contains(overviewLabels[0].(*widget.Label).Text, ":2086") {
+		t.Fatalf("expected overview to show ':2086 · VPN slot', got %+v", overviewLabels)
+	}
+
+	d.settingsSection = "VPN"
+	d.navigate("settings")
+	selects := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		s, ok := obj.(*widget.Select)
+		return ok && s.Selected == "second"
+	})
+	if len(selects) != 1 {
+		t.Fatalf("expected 1 select widget with 'second' selected in Settings -> VPN, got %d", len(selects))
+	}
+}

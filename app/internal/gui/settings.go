@@ -26,15 +26,25 @@ func (d *dashboard) settingsView() fyne.CanvasObject {
 	var content fyne.CanvasObject
 	switch d.settingsSection {
 	case "VPN":
+		vpnItems := []fyne.CanvasObject{
+			d.boolSetting("Enable VPN", "tun_enabled", d.state.TunEnabled, true, false),
+		}
+		if d.state != nil && len(d.state.Slots) > 0 {
+			slotNames := make([]string, len(d.state.Slots))
+			for i, slot := range d.state.Slots {
+				slotNames[i] = slot.Name
+			}
+			vpnItems = append(vpnItems, d.selectSetting("Exit slot", "tun_slot", d.state.TunSlotName(), slotNames, nil))
+		}
+		vpnItems = append(vpnItems,
+			d.selectSetting("DNS mode", "tun_dns_direct", strconv.FormatBool(d.state.TunDNSDirect), []string{"false", "true"}, map[string]string{"false": "Static routed", "true": "Real network"}),
+			d.textSetting("Static DNS resolver", "tun_static_dns", d.state.TunStaticDNS, "8.8.8.8"),
+			d.boolSetting("Tunnel private/LAN ranges", "tun_tunnel_lan", d.state.TunTunnelLAN, true, false),
+			d.boolSetting("Allow IPv6 outside VPN", "tun_allow_ipv6", d.state.TunAllowIPv6, true, false),
+			d.boolSetting("Answer ping locally", "tun_no_icmp", d.state.TunICMP(), false, true),
+		)
 		content = container.NewVBox(
-			panel("System-wide VPN", "Capture device traffic through the selected exit slot",
-				d.boolSetting("Enable VPN", "tun_enabled", d.state.TunEnabled, true, false),
-				d.selectSetting("DNS mode", "tun_dns_direct", strconv.FormatBool(d.state.TunDNSDirect), []string{"false", "true"}, map[string]string{"false": "Static routed", "true": "Real network"}),
-				d.textSetting("Static DNS resolver", "tun_static_dns", d.state.TunStaticDNS, "8.8.8.8"),
-				d.boolSetting("Tunnel private/LAN ranges", "tun_tunnel_lan", d.state.TunTunnelLAN, true, false),
-				d.boolSetting("Allow IPv6 outside VPN", "tun_allow_ipv6", d.state.TunAllowIPv6, true, false),
-				d.boolSetting("Answer ping locally", "tun_no_icmp", d.state.TunICMP(), false, true),
-			),
+			panel("System-wide VPN", "Capture device traffic through the selected exit slot", vpnItems...),
 			panel("Virtual interface", "Changes apply when the VPN reconnects",
 				d.textSetting("Device name", "tun_name", d.state.TunName, "Platform default"),
 				d.textSetting("Interface address", "tun_addr", d.state.TunAddr, "198.18.0.1/30"),

@@ -85,13 +85,21 @@ func (d *dashboard) overviewView() fyne.CanvasObject {
 	}
 
 	endpointItems := []fyne.CanvasObject{}
+	tunSlot := ""
+	if d.state != nil {
+		tunSlot = d.state.TunSlotName()
+	}
 	for _, slot := range d.state.Slots {
 		if !slot.Enabled {
 			continue
 		}
 		address := fmt.Sprintf("socks5://%s:%d", d.state.ListenHost(), slot.Port)
+		details := address
+		if tunSlot != "" && slot.Name == tunSlot {
+			details += " · VPN slot"
+		}
 		endpointItems = append(endpointItems, flexRow(
-			container.NewVBox(strong(slot.Name), ellipsized(address)),
+			container.NewVBox(strong(slot.Name), ellipsized(details)),
 			widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func(value string) func() {
 				return func() { d.window.Clipboard().SetContent(value); d.notify("Address copied") }
 			}(address)),
@@ -243,6 +251,10 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 		widget.NewButtonWithIcon("Add slot", theme.ContentAddIcon(), d.addSlot),
 		layout.NewSpacer(),
 	)}
+	tunSlot := ""
+	if d.state != nil {
+		tunSlot = d.state.TunSlotName()
+	}
 	for slotIndex, slot := range d.state.Slots {
 		slotIndex, slot := slotIndex, slot
 		live := "Idle"
@@ -257,14 +269,26 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 		enabled.Checked = slot.Enabled
 		slotTitle := ellipsized(slot.Name)
 		slotTitle.TextStyle = fyne.TextStyle{Bold: true}
+		isTun := tunSlot != "" && slot.Name == tunSlot
+		slotDetails := fmt.Sprintf("Port %d · %s", slot.Port, live)
+		if isTun {
+			slotDetails += " · VPN slot"
+		}
+		var vpnBtn *widget.Button
+		if isTun {
+			vpnBtn = widget.NewButtonWithIcon("Selected for VPN", theme.ConfirmIcon(), nil)
+			vpnBtn.Disable()
+		} else {
+			vpnBtn = widget.NewButton("Use for VPN", func() { d.patch(map[string]any{"tun_slot": slot.Name}) })
+		}
 		rows := []fyne.CanvasObject{
 			flexRow(
-				container.NewVBox(slotTitle, mutedLine(fmt.Sprintf("Port %d · %s", slot.Port, live))),
+				container.NewVBox(slotTitle, mutedLine(slotDetails)),
 				enabled,
 			),
 			container.NewHBox(
 				widget.NewButton("Edit port", func() { d.editSlotPort(slotIndex) }),
-				widget.NewButton("Use for VPN", func() { d.patch(map[string]any{"tun_slot": slot.Name}) }),
+				vpnBtn,
 				layout.NewSpacer(),
 				widget.NewButtonWithIcon("Delete slot", theme.DeleteIcon(), func() { d.removeSlot(slotIndex) }),
 			),
