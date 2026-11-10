@@ -42,6 +42,7 @@ type dashboard struct {
 	logFilter       loghub.Filter
 	logList         *widget.List
 	page            string
+	selectedSlot    string
 	settingsSection string
 	nodeQuery       string
 	content         *fyne.Container
@@ -354,6 +355,7 @@ func (d *dashboard) addSlot() {
 		var slots []store.Slot
 		_ = json.Unmarshal(data, &slots)
 		slots = append(slots, store.Slot{Name: name, Port: d.state.FreeSlotPort(), Enabled: true})
+		d.selectedSlot = name
 		d.patch(map[string]any{"slots": slots})
 	})
 }

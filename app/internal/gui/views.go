@@ -246,75 +246,158 @@ func (d *dashboard) subscriptionsView() fyne.CanvasObject {
 	)
 }
 
+func tabLabel(name string, isTun bool) string {
+	clean := strings.Join(strings.Fields(name), " ")
+	if clean == "" {
+		if isTun {
+			return "VPN"
+		}
+		return "Slot"
+	}
+	runes := []rune(clean)
+	maxLen := 18
+	if isTun {
+		maxLen = 14
+	}
+	if len(runes) > maxLen {
+		clean = string(runes[:maxLen-1]) + "…"
+	}
+	if isTun {
+		return clean + " · VPN"
+	}
+	return clean
+}
+
 func (d *dashboard) routesView() fyne.CanvasObject {
-	items := []fyne.CanvasObject{container.NewHBox(
-		widget.NewButtonWithIcon("Add slot", theme.ContentAddIcon(), d.addSlot),
-		layout.NewSpacer(),
-	)}
 	tunSlot := ""
 	if d.state != nil {
 		tunSlot = d.state.TunSlotName()
 	}
-	for slotIndex, slot := range d.state.Slots {
-		slotIndex, slot := slotIndex, slot
-		live := "Idle"
-		for _, slotStatus := range d.status.Slots {
-			if slotStatus.Name == slot.Name && slotStatus.Tier > 0 {
-				live = fmt.Sprintf("T%d · %s · %s", slotStatus.Tier, slotStatus.Main, milliseconds(slotStatus.Egress))
-			}
+
+	slots := []store.Slot{}
+	if d.state != nil {
+		slots = d.state.Slots
+	}
+
+	selectedIdx := -1
+	if len(slots) > 0 {
+		selectedIdx = d.state.SlotIndexByName(d.selectedSlot)
+		if selectedIdx < 0 {
+			selectedIdx = 0
+			d.selectedSlot = slots[0].Name
 		}
-		enabled := widget.NewCheck("Enabled", func(on bool) {
-			d.updateSlots(func(slots []store.Slot) { slots[slotIndex].Enabled = on })
+	} else {
+		d.selectedSlot = ""
+	}
+
+	addSlotBtn := widget.NewButtonWithIcon("Add slot", theme.ContentAddIcon(), d.addSlot)
+
+	tabItems := make([]fyne.CanvasObject, 0, len(slots))
+	for i, slot := range slots {
+		slotName := slot.Name
+		isTun := tunSlot != "" && slotName == tunSlot
+		isSelected := i == selectedIdx
+
+		label := tabLabel(slotName, isTun)
+		var icon fyne.Resource
+		if isTun {
+			icon = theme.ConfirmIcon()
+		}
+		btn := widget.NewButtonWithIcon(label, icon, func() {
+			d.selectedSlot = slotName
+			d.render()
 		})
-		enabled.Checked = slot.Enabled
-		slotTitle := ellipsized(slot.Name)
-		slotTitle.TextStyle = fyne.TextStyle{Bold: true}
-		isTun := tunSlot != "" && slot.Name == tunSlot
-		slotDetails := fmt.Sprintf("Port %d · %s", slot.Port, live)
-		if isTun {
-			slotDetails += " · VPN slot"
-		}
-		var vpnBtn *widget.Button
-		if isTun {
-			vpnBtn = widget.NewButtonWithIcon("Selected for VPN", theme.ConfirmIcon(), nil)
-			vpnBtn.Disable()
+		if isSelected {
+			btn.Importance = widget.HighImportance
+		} else if isTun {
+			btn.Importance = widget.MediumImportance
 		} else {
-			vpnBtn = widget.NewButton("Use for VPN", func() { d.patch(map[string]any{"tun_slot": slot.Name}) })
+			btn.Importance = widget.LowImportance
 		}
-		rows := []fyne.CanvasObject{
-			flexRow(
-				container.NewVBox(slotTitle, mutedLine(slotDetails)),
-				enabled,
-			),
-			container.NewHBox(
-				widget.NewButton("Edit port", func() { d.editSlotPort(slotIndex) }),
-				vpnBtn,
-				layout.NewSpacer(),
-				widget.NewButtonWithIcon("Delete slot", theme.DeleteIcon(), func() { d.removeSlot(slotIndex) }),
-			),
-		}
-		if len(slot.Mains) == 0 {
-			rows = append(rows, widget.NewSeparator(), muted("No final exits in this slot."))
-		}
-		for mainIndex, main := range slot.Mains {
-			slotIndex, mainIndex, main := slotIndex, mainIndex, main
-			exitEnabled := widget.NewCheck("Enabled", func(on bool) {
-				d.updateSlots(func(slots []store.Slot) { slots[slotIndex].Mains[mainIndex].Enabled = on })
-			})
-			exitEnabled.Checked = main.Enabled
-			direct := widget.NewCheck("Allow direct · T1", func(on bool) {
-				d.updateSlots(func(slots []store.Slot) { slots[slotIndex].Mains[mainIndex].AllowNoHop = on })
-			})
-			direct.Checked = main.AllowNoHop
-			rows = append(rows, widget.NewSeparator(), flexRow(
-				container.NewVBox(ellipsized(main.Name), mutedLine(mainHost(main.URL)+" · "+store.ProtoTag(main.URL))),
-				widget.NewButtonWithIcon("", theme.DeleteIcon(), func() { d.removeMain(slotIndex, mainIndex) }),
-			), container.NewHBox(exitEnabled, direct))
-		}
-		rows = append(rows, widget.NewButtonWithIcon("Add final exit", theme.ContentAddIcon(), func() { d.addMain(slotIndex) }))
-		items = append(items, panel("", "", rows...))
+		tabItems = append(tabItems, btn)
+	}
+
+	tabsScroll := container.NewHScroll(container.NewHBox(tabItems...))
+	topBar := container.NewBorder(nil, nil, addSlotBtn, nil, inset(tabsScroll, 0, 0, 8, 0))
+
+	items := []fyne.CanvasObject{topBar}
+	if selectedIdx >= 0 && selectedIdx < len(slots) {
+		items = append(items, d.slotPanel(selectedIdx, slots[selectedIdx], tunSlot))
+	} else {
+		items = append(items, panel("", "", muted("No failover slots configured. Click \"Add slot\" to create one.")))
 	}
 	return container.NewVBox(items...)
+}
+
+func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fyne.CanvasObject {
+	live := "Idle"
+	for _, slotStatus := range d.status.Slots {
+		if slotStatus.Name == slot.Name && slotStatus.Tier > 0 {
+			live = fmt.Sprintf("T%d · %s · %s", slotStatus.Tier, slotStatus.Main, milliseconds(slotStatus.Egress))
+		}
+	}
+	enabled := widget.NewCheck("Enabled", func(on bool) {
+		d.updateSlots(func(slots []store.Slot) {
+			if slotIndex < len(slots) {
+				slots[slotIndex].Enabled = on
+			}
+		})
+	})
+	enabled.Checked = slot.Enabled
+	slotTitle := ellipsized(slot.Name)
+	slotTitle.TextStyle = fyne.TextStyle{Bold: true}
+	isTun := tunSlot != "" && slot.Name == tunSlot
+	slotDetails := fmt.Sprintf("Port %d · %s", slot.Port, live)
+	if isTun {
+		slotDetails += " · VPN slot"
+	}
+	var vpnBtn *widget.Button
+	if isTun {
+		vpnBtn = widget.NewButtonWithIcon("Selected for VPN", theme.ConfirmIcon(), nil)
+		vpnBtn.Disable()
+	} else {
+		vpnBtn = widget.NewButton("Use for VPN", func() { d.patch(map[string]any{"tun_slot": slot.Name}) })
+	}
+	rows := []fyne.CanvasObject{
+		flexRow(
+			container.NewVBox(slotTitle, mutedLine(slotDetails)),
+			enabled,
+		),
+		container.NewHBox(
+			widget.NewButton("Edit port", func() { d.editSlotPort(slotIndex) }),
+			vpnBtn,
+			layout.NewSpacer(),
+			widget.NewButtonWithIcon("Delete slot", theme.DeleteIcon(), func() { d.removeSlot(slotIndex) }),
+		),
+	}
+	if len(slot.Mains) == 0 {
+		rows = append(rows, widget.NewSeparator(), muted("No final exits in this slot."))
+	}
+	for mainIndex, main := range slot.Mains {
+		slotIndex, mainIndex, main := slotIndex, mainIndex, main
+		exitEnabled := widget.NewCheck("Enabled", func(on bool) {
+			d.updateSlots(func(slots []store.Slot) {
+				if slotIndex < len(slots) && mainIndex < len(slots[slotIndex].Mains) {
+					slots[slotIndex].Mains[mainIndex].Enabled = on
+				}
+			})
+		})
+		exitEnabled.Checked = main.Enabled
+		direct := widget.NewCheck("Allow direct · T1", func(on bool) {
+			d.updateSlots(func(slots []store.Slot) {
+				if slotIndex < len(slots) && mainIndex < len(slots[slotIndex].Mains) {
+					slots[slotIndex].Mains[mainIndex].AllowNoHop = on
+				}
+			})
+		})
+		direct.Checked = main.AllowNoHop
+		rows = append(rows, widget.NewSeparator(), flexRow(
+			container.NewVBox(ellipsized(main.Name), mutedLine(mainHost(main.URL)+" · "+store.ProtoTag(main.URL))),
+			widget.NewButtonWithIcon("", theme.DeleteIcon(), func() { d.removeMain(slotIndex, mainIndex) }),
+		), container.NewHBox(exitEnabled, direct))
+	}
+	rows = append(rows, widget.NewButtonWithIcon("Add final exit", theme.ContentAddIcon(), func() { d.addMain(slotIndex) }))
+	return panel("", "", rows...)
 }
 
 func (d *dashboard) editSlotPort(slotIndex int) {
@@ -353,6 +436,15 @@ func (d *dashboard) removeSlot(slotIndex int) {
 			return // another client changed the slots while this dialog was open
 		}
 		slots = append(slots[:slotIndex], slots[slotIndex+1:]...)
+		if d.selectedSlot == name {
+			if slotIndex > 0 && slotIndex-1 < len(slots) {
+				d.selectedSlot = slots[slotIndex-1].Name
+			} else if len(slots) > 0 {
+				d.selectedSlot = slots[0].Name
+			} else {
+				d.selectedSlot = ""
+			}
+		}
 		d.patch(map[string]any{"slots": slots})
 	})
 }

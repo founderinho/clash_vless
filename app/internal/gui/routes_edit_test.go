@@ -273,12 +273,23 @@ func TestSlotDisplaysSelectedForVPN(t *testing.T) {
 		t.Fatal("expected 'Selected for VPN' button to be disabled")
 	}
 
+	// In the tabbed view, the first slot is selected. To see "Use for VPN" for the second slot,
+	// select the second slot's tab.
+	tabs := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && strings.Contains(b.Text, "second")
+	})
+	if len(tabs) != 1 {
+		t.Fatalf("expected 1 tab for 'second', got %d", len(tabs))
+	}
+	test.Tap(tabs[0].(*widget.Button))
+
 	useBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
 		b, ok := obj.(*widget.Button)
 		return ok && b.Text == "Use for VPN"
 	})
-	if len(useBtns) != 2 {
-		t.Fatalf("expected 2 'Use for VPN' buttons, got %d", len(useBtns))
+	if len(useBtns) != 1 {
+		t.Fatalf("expected 1 'Use for VPN' button on selected slot, got %d", len(useBtns))
 	}
 
 	test.Tap(useBtns[0].(*widget.Button))
@@ -313,5 +324,169 @@ func TestSlotDisplaysSelectedForVPN(t *testing.T) {
 	})
 	if len(selects) != 1 {
 		t.Fatalf("expected 1 select widget with 'second' selected in Settings -> VPN, got %d", len(selects))
+	}
+}
+
+func TestExitRoutesTabsBar(t *testing.T) {
+	d := routeTestDashboard(t)
+	d.render()
+
+	// 1. Initial state: slot 0 ("first") is selected by default, and it's the default VPN slot.
+	if d.selectedSlot != "first" {
+		t.Fatalf("expected initial selectedSlot to be 'first', got %q", d.selectedSlot)
+	}
+
+	// Verify tab buttons exist for all 3 slots
+	tabButtons := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		if !ok {
+			return false
+		}
+		return strings.Contains(b.Text, "first") || strings.Contains(b.Text, "second") || strings.Contains(b.Text, "third")
+	})
+	if len(tabButtons) != 3 {
+		t.Fatalf("expected 3 slot tab buttons, got %d", len(tabButtons))
+	}
+
+	// Find the tabs individually
+	var tabFirst, tabSecond, tabThird *widget.Button
+	for _, obj := range tabButtons {
+		b := obj.(*widget.Button)
+		if strings.Contains(b.Text, "first") {
+			tabFirst = b
+		} else if strings.Contains(b.Text, "second") {
+			tabSecond = b
+		} else if strings.Contains(b.Text, "third") {
+			tabThird = b
+		}
+	}
+
+	if tabFirst == nil || tabSecond == nil || tabThird == nil {
+		t.Fatalf("missing one of the tabs: first=%v, second=%v, third=%v", tabFirst, tabSecond, tabThird)
+	}
+
+	// Tab "first" is selected (HighImportance) and is VPN slot (icon != nil, contains "VPN")
+	if tabFirst.Importance != widget.HighImportance {
+		t.Fatalf("expected selected tab 'first' to have HighImportance, got %v", tabFirst.Importance)
+	}
+	if tabFirst.Icon == nil {
+		t.Fatal("expected VPN slot tab 'first' to display an icon")
+	}
+	if !strings.Contains(tabFirst.Text, "VPN") {
+		t.Fatalf("expected tab 'first' text to show VPN, got %q", tabFirst.Text)
+	}
+
+	// Tabs "second" and "third" are not selected and not VPN (LowImportance, no icon)
+	if tabSecond.Importance != widget.LowImportance {
+		t.Fatalf("expected unselected tab 'second' to have LowImportance, got %v", tabSecond.Importance)
+	}
+	if tabSecond.Icon != nil {
+		t.Fatal("expected non-VPN tab 'second' to have no icon")
+	}
+
+	// Verify only slot "first" panel is displayed
+	labels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		l, ok := obj.(*widget.Label)
+		return ok && strings.Contains(l.Text, "Port 2084")
+	})
+	if len(labels) != 1 {
+		t.Fatalf("expected 1 label with 'Port 2084', got %d", len(labels))
+	}
+	labelsSecond := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		l, ok := obj.(*widget.Label)
+		return ok && strings.Contains(l.Text, "Port 2086")
+	})
+	if len(labelsSecond) != 0 {
+		t.Fatalf("expected 0 labels with 'Port 2086' while 'first' is selected, got %d", len(labelsSecond))
+	}
+
+	// 2. Switch tab to "second"
+	test.Tap(tabSecond)
+
+	if d.selectedSlot != "second" {
+		t.Fatalf("expected selectedSlot to be 'second', got %q", d.selectedSlot)
+	}
+
+	// Re-query tabs after render
+	tabFirst = nil
+	tabSecond = nil
+	for _, obj := range findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && (strings.Contains(b.Text, "first") || strings.Contains(b.Text, "second"))
+	}) {
+		b := obj.(*widget.Button)
+		if strings.Contains(b.Text, "first") {
+			tabFirst = b
+		} else if strings.Contains(b.Text, "second") {
+			tabSecond = b
+		}
+	}
+
+	// "second" is now active (HighImportance)
+	if tabSecond.Importance != widget.HighImportance {
+		t.Fatalf("expected active tab 'second' to have HighImportance, got %v", tabSecond.Importance)
+	}
+	// "first" is inactive but VPN slot -> highlighted with MediumImportance + icon + text "VPN"
+	if tabFirst.Importance != widget.MediumImportance {
+		t.Fatalf("expected inactive VPN tab 'first' to have MediumImportance, got %v", tabFirst.Importance)
+	}
+	if tabFirst.Icon == nil || !strings.Contains(tabFirst.Text, "VPN") {
+		t.Fatalf("expected inactive VPN tab 'first' to keep VPN indicator, got icon=%v text=%q", tabFirst.Icon, tabFirst.Text)
+	}
+
+	// Verify slot "second" panel is now displayed
+	labelsSecond = findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		l, ok := obj.(*widget.Label)
+		return ok && strings.Contains(l.Text, "Port 2086")
+	})
+	if len(labelsSecond) != 1 {
+		t.Fatalf("expected 1 label with 'Port 2086' after selecting 'second', got %d", len(labelsSecond))
+	}
+
+	// 3. Status updates keep the selected tab
+	d.status = engine.Status{Tier: 1}
+	d.render()
+	if d.selectedSlot != "second" {
+		t.Fatalf("status update reset selectedSlot from 'second' to %q", d.selectedSlot)
+	}
+
+	// 4. VPN slot changed to "third"
+	d.state.TunSlot = "third"
+	d.render()
+
+	tabThirdObj := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && strings.Contains(b.Text, "third")
+	})
+	if len(tabThirdObj) != 1 {
+		t.Fatalf("expected 1 tab for 'third', got %d", len(tabThirdObj))
+	}
+	tabThird = tabThirdObj[0].(*widget.Button)
+	if tabThird.Icon == nil || !strings.Contains(tabThird.Text, "VPN") {
+		t.Fatalf("expected tab 'third' to become VPN tab, got icon=%v text=%q", tabThird.Icon, tabThird.Text)
+	}
+}
+
+func TestTabLabelFormatting(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		isTun    bool
+		expected string
+	}{
+		{"", false, "Slot"},
+		{"", true, "VPN"},
+		{"first", false, "first"},
+		{"first", true, "first · VPN"},
+		{"slot-1", false, "slot-1"},
+		{"slot-1", true, "slot-1 · VPN"},
+		{"   spaced   name   ", false, "spaced name"},
+		{"a_very_long_slot_name_here", false, "a_very_long_slot_…"},
+		{"a_very_long_slot_name_here", true, "a_very_long_s… · VPN"},
+		{"русское_имя_слота_длинное", false, "русское_имя_слота…"},
+	} {
+		got := tabLabel(tc.name, tc.isTun)
+		if got != tc.expected {
+			t.Errorf("tabLabel(%q, %t) = %q, want %q", tc.name, tc.isTun, got, tc.expected)
+		}
 	}
 }
