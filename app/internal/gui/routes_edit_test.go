@@ -13,6 +13,7 @@ import (
 	"clashvless/internal/engine"
 	"clashvless/internal/store"
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/test"
 	"fyne.io/fyne/v2/widget"
 )
@@ -384,6 +385,15 @@ func TestExitRoutesTabsBar(t *testing.T) {
 		t.Fatal("expected non-VPN tab 'second' to have no icon")
 	}
 
+	// Unselected tabs not used for VPN ("second" and "third") have a rounded rectangle behind them
+	tabRects := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		r, ok := obj.(*canvas.Rectangle)
+		return ok && r.CornerRadius == 4 && r.FillColor == colorSurface
+	})
+	if len(tabRects) != 2 {
+		t.Fatalf("expected 2 rounded rectangles behind unselected non-VPN tabs, got %d", len(tabRects))
+	}
+
 	// Verify only slot "first" panel is displayed
 	labels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
 		l, ok := obj.(*widget.Label)
@@ -443,6 +453,14 @@ func TestExitRoutesTabsBar(t *testing.T) {
 		t.Fatalf("expected 1 label with 'Port 2086' after selecting 'second', got %d", len(labelsSecond))
 	}
 
+	tabRects = findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		r, ok := obj.(*canvas.Rectangle)
+		return ok && r.CornerRadius == 4 && r.FillColor == colorSurface
+	})
+	if len(tabRects) != 1 {
+		t.Fatalf("expected 1 rounded rectangle behind unselected non-VPN tab 'third', got %d", len(tabRects))
+	}
+
 	// 3. Status updates keep the selected tab
 	d.status = engine.Status{Tier: 1}
 	d.render()
@@ -488,5 +506,75 @@ func TestTabLabelFormatting(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("tabLabel(%q, %t) = %q, want %q", tc.name, tc.isTun, got, tc.expected)
 		}
+	}
+}
+
+func TestAddSlotOpensNewSlot(t *testing.T) {
+	d, commands := routesDashboard(t)
+	d.render()
+
+	// Initial slot is "first"
+	if d.selectedSlot != "first" {
+		t.Fatalf("expected initial selectedSlot to be 'first', got %q", d.selectedSlot)
+	}
+
+	// Click "Add slot" button
+	addBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && b.Text == "Add slot"
+	})
+	if len(addBtns) != 1 {
+		t.Fatalf("expected 1 'Add slot' button, got %d", len(addBtns))
+	}
+	test.Tap(addBtns[0].(*widget.Button))
+
+	// Enter new slot name "fourth"
+	entry := routeDialogEntry(t, d)
+	entry.SetText("fourth")
+	tapRouteDialogButton(t, d, "Add")
+
+	// Dialog has closed and d.render() ran.
+	// The new slot "fourth" must be selected and opened immediately, not dropped to the first tab.
+	if d.selectedSlot != "fourth" {
+		t.Fatalf("expected selectedSlot to be 'fourth' immediately after add, got %q", d.selectedSlot)
+	}
+
+	// Verify "fourth" tab is active (HighImportance)
+	fourthTabs := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && strings.Contains(b.Text, "fourth")
+	})
+	if len(fourthTabs) != 1 {
+		t.Fatalf("expected 1 tab for 'fourth', got %d", len(fourthTabs))
+	}
+	if fourthTabs[0].(*widget.Button).Importance != widget.HighImportance {
+		t.Fatalf("expected 'fourth' tab to have HighImportance, got %v", fourthTabs[0].(*widget.Button).Importance)
+	}
+
+	// Verify the slot panel displayed is for "fourth" (not "first")
+	fourthLabels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		l, ok := obj.(*widget.Label)
+		return ok && strings.Contains(l.Text, "fourth")
+	})
+	if len(fourthLabels) == 0 {
+		t.Fatal("expected 'fourth' slot panel to be opened")
+	}
+
+	// Daemon processes patch and sends updated state
+	applyRoutePatch(t, d, commands)
+
+	// After state sync, "fourth" remains opened
+	if d.selectedSlot != "fourth" {
+		t.Fatalf("expected selectedSlot to remain 'fourth' after state patch, got %q", d.selectedSlot)
+	}
+	fourthTabs = findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && strings.Contains(b.Text, "fourth")
+	})
+	if len(fourthTabs) != 1 {
+		t.Fatalf("expected 1 tab for 'fourth' after patch, got %d", len(fourthTabs))
+	}
+	if fourthTabs[0].(*widget.Button).Importance != widget.HighImportance {
+		t.Fatalf("expected 'fourth' tab to still have HighImportance after patch, got %v", fourthTabs[0].(*widget.Button).Importance)
 	}
 }

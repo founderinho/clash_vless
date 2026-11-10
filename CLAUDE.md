@@ -30,7 +30,9 @@ or a **system-wide TUN** — with automatic tiered failover.
     so long names or VLESS text cannot increase the window's minimum width after a connection.
     Navigation inside Exit routes uses a scrollable tabs bar placed to the right of "Add slot",
     showing only the selected slot where the first slot used to sit; the VPN slot is highlighted
-    with a confirm icon and "· VPN" label, while the active tab uses HighImportance styling.
+    with a confirm icon and "· VPN" label, while the active tab uses HighImportance styling, and
+    unselected non-VPN tabs sit on a rounded rectangle background. Adding a slot immediately selects
+    and opens the new slot without dropping back to the first tab.
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
     desktop, and Android. `control.Event.Record` carries structured fields while `Line` preserves compatibility.
     Both embedded and standalone daemons route xray-core through the same hub; GUI mode no longer discards xray logs.

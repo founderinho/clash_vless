@@ -272,6 +272,7 @@ func (d *dashboard) updateSlots(mutate func([]store.Slot)) {
 	var slots []store.Slot
 	_ = json.Unmarshal(data, &slots)
 	mutate(slots)
+	d.state.Slots = slots
 	d.patch(map[string]any{"slots": slots})
 }
 
@@ -346,16 +347,21 @@ func (d *dashboard) addMain(slotIndex int) {
 }
 
 func (d *dashboard) addSlot() {
+	if d.state == nil {
+		return
+	}
 	d.ask("Add slot", "Slot name", fmt.Sprintf("slot-%d", len(d.state.Slots)+1), "Add", func(name string) {
-		if name == "" || d.state.SlotIndexByName(name) >= 0 {
+		if d.state == nil || name == "" || d.state.SlotIndexByName(name) >= 0 {
 			d.notify("Enter a unique slot name")
 			return
 		}
 		data, _ := json.Marshal(d.state.Slots)
 		var slots []store.Slot
 		_ = json.Unmarshal(data, &slots)
-		slots = append(slots, store.Slot{Name: name, Port: d.state.FreeSlotPort(), Enabled: true})
+		newSlot := store.Slot{Name: name, Port: d.state.FreeSlotPort(), Enabled: true}
+		slots = append(slots, newSlot)
 		d.selectedSlot = name
+		d.state.Slots = slots
 		d.patch(map[string]any{"slots": slots})
 	})
 }

@@ -283,8 +283,12 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 	if len(slots) > 0 {
 		selectedIdx = d.state.SlotIndexByName(d.selectedSlot)
 		if selectedIdx < 0 {
-			selectedIdx = 0
-			d.selectedSlot = slots[0].Name
+			if d.selectedSlot == "" {
+				selectedIdx = 0
+				d.selectedSlot = slots[0].Name
+			} else {
+				selectedIdx = 0
+			}
 		}
 	} else {
 		d.selectedSlot = ""
@@ -307,14 +311,20 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 			d.selectedSlot = slotName
 			d.render()
 		})
+		var tabItem fyne.CanvasObject = btn
 		if isSelected {
 			btn.Importance = widget.HighImportance
 		} else if isTun {
 			btn.Importance = widget.MediumImportance
 		} else {
 			btn.Importance = widget.LowImportance
+			bg := canvas.NewRectangle(colorSurface)
+			bg.CornerRadius = 4
+			bg.StrokeColor = colorBorder
+			bg.StrokeWidth = 1
+			tabItem = container.NewStack(bg, btn)
 		}
-		tabItems = append(tabItems, btn)
+		tabItems = append(tabItems, tabItem)
 	}
 
 	tabsScroll := container.NewHScroll(container.NewHBox(tabItems...))
@@ -445,6 +455,7 @@ func (d *dashboard) removeSlot(slotIndex int) {
 				d.selectedSlot = ""
 			}
 		}
+		d.state.Slots = slots
 		d.patch(map[string]any{"slots": slots})
 	})
 }
