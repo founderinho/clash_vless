@@ -12,7 +12,6 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -339,6 +338,18 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 	return container.NewVBox(items...)
 }
 
+func slotTitleLabel(name string) *widget.Label {
+	clean := strings.Join(strings.Fields(name), " ")
+	runes := []rune(clean)
+	const maxLen = 32
+	if len(runes) > maxLen {
+		clean = string(runes[:maxLen-1]) + "…"
+	}
+	label := widget.NewLabel(clean)
+	label.TextStyle = fyne.TextStyle{Bold: true}
+	return label
+}
+
 func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fyne.CanvasObject {
 	live := "Idle"
 	for _, slotStatus := range d.status.Slots {
@@ -346,16 +357,79 @@ func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fy
 			live = fmt.Sprintf("T%d · %s · %s", slotStatus.Tier, slotStatus.Main, milliseconds(slotStatus.Egress))
 		}
 	}
-	enabled := widget.NewCheck("Enabled", func(on bool) {
+	slotTitle := slotTitleLabel(slot.Name)
+	tipBg := canvas.NewRectangle(colorControl)
+	tipBg.CornerRadius = 3
+	tipText := canvas.NewText("Rename slot", colorMuted)
+	tipText.TextSize = 11
+	tipText.Hide()
+	tipPill := container.NewStack(tipBg, container.NewPadded(tipText))
+	tipPill.Hide()
+
+	renameBtn := newTooltipIconButton(theme.DocumentCreateIcon(), func() {
+		d.renameSlot(slotIndex)
+	}, func(hovered bool) {
+		if hovered {
+			tipText.Show()
+			tipPill.Show()
+		} else {
+			tipText.Hide()
+			tipPill.Hide()
+		}
+	})
+
+	sep := canvas.NewText("|", colorMuted)
+	sep.TextSize = 13
+
+	statusStr := "Disabled"
+	statusCol := colorMuted
+	if slot.Enabled {
+		statusStr = "Enabled"
+		statusCol = colorText
+	}
+	statusLabel := canvas.NewText(statusStr, statusCol)
+	statusLabel.TextSize = 13
+
+	enableSlider := newCompactSwitch(slot.Enabled, func(on bool) {
+		if on {
+			statusLabel.Text = "Enabled"
+			statusLabel.Color = colorText
+		} else {
+			statusLabel.Text = "Disabled"
+			statusLabel.Color = colorMuted
+		}
+		statusLabel.Refresh()
 		d.updateSlots(func(slots []store.Slot) {
 			if slotIndex < len(slots) {
 				slots[slotIndex].Enabled = on
 			}
 		})
 	})
-	enabled.Checked = slot.Enabled
-	slotTitle := ellipsized(slot.Name)
-	slotTitle.TextStyle = fyne.TextStyle{Bold: true}
+
+	deleteTipBg := canvas.NewRectangle(colorControl)
+	deleteTipBg.CornerRadius = 3
+	deleteTipText := canvas.NewText("Delete slot", colorMuted)
+	deleteTipText.TextSize = 11
+	deleteTipText.Hide()
+	deleteTipPill := container.NewStack(deleteTipBg, container.NewPadded(deleteTipText))
+	deleteTipPill.Hide()
+
+	deleteBtn := newTooltipIconButton(theme.DeleteIcon(), func() {
+		d.removeSlot(slotIndex)
+	}, func(hovered bool) {
+		if hovered {
+			deleteTipText.Show()
+			deleteTipPill.Show()
+		} else {
+			deleteTipText.Hide()
+			deleteTipPill.Hide()
+		}
+	})
+
+	titleLeft := container.NewHBox(slotTitle, renameBtn, tipPill, sep, statusLabel, enableSlider)
+	titleRight := container.NewHBox(deleteTipPill, deleteBtn)
+	titleRow := flexRow(titleLeft, titleRight)
+
 	isTun := tunSlot != "" && slot.Name == tunSlot
 	slotDetails := fmt.Sprintf("Port %d · %s", slot.Port, live)
 	if isTun {
@@ -369,15 +443,11 @@ func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fy
 		vpnBtn = widget.NewButton("Use for VPN", func() { d.patch(map[string]any{"tun_slot": slot.Name}) })
 	}
 	rows := []fyne.CanvasObject{
-		flexRow(
-			container.NewVBox(slotTitle, mutedLine(slotDetails)),
-			enabled,
-		),
+		titleRow,
+		mutedLine(slotDetails),
 		container.NewHBox(
 			widget.NewButton("Edit port", func() { d.editSlotPort(slotIndex) }),
 			vpnBtn,
-			layout.NewSpacer(),
-			widget.NewButtonWithIcon("Delete slot", theme.DeleteIcon(), func() { d.removeSlot(slotIndex) }),
 		),
 	}
 	if len(slot.Mains) == 0 {

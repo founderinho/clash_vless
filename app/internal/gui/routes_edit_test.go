@@ -15,6 +15,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/test"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -578,3 +579,304 @@ func TestAddSlotOpensNewSlot(t *testing.T) {
 		t.Fatalf("expected 'fourth' tab to still have HighImportance after patch, got %v", fourthTabs[0].(*widget.Button).Importance)
 	}
 }
+
+func TestRenameSlot(t *testing.T) {
+	d, commands := routesDashboard(t)
+	d.selectedSlot = "second"
+	d.render()
+
+	// Trigger rename on slot index 1 ("second")
+	d.renameSlot(1)
+	entry := routeDialogEntry(t, d)
+	if entry.Text != "second" {
+		t.Fatalf("expected prefilled text 'second', got %q", entry.Text)
+	}
+
+	// Submit new name "renamed-second"
+	entry.SetText("renamed-second")
+	tapRouteDialogButton(t, d, "Save")
+
+	if d.selectedSlot != "renamed-second" {
+		t.Fatalf("expected selectedSlot to update to 'renamed-second', got %q", d.selectedSlot)
+	}
+
+	applyRoutePatch(t, d, commands)
+
+	if d.state.Slots[1].Name != "renamed-second" {
+		t.Fatalf("expected slot 1 to be named 'renamed-second', got %q", d.state.Slots[1].Name)
+	}
+
+	// Verify tab label updated
+	tabs := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && strings.Contains(b.Text, "renamed-second")
+	})
+	if len(tabs) != 1 {
+		t.Fatalf("expected 1 tab for 'renamed-second', got %d", len(tabs))
+	}
+}
+
+func TestRenameTunSlotUpdatesTunSlot(t *testing.T) {
+	d, commands := routesDashboard(t)
+	d.state.TunSlot = "first"
+	d.selectedSlot = "first"
+	d.render()
+
+	d.renameSlot(0)
+	entry := routeDialogEntry(t, d)
+	entry.SetText("primary")
+	tapRouteDialogButton(t, d, "Save")
+
+	if d.state.TunSlot != "primary" {
+		t.Fatalf("expected d.state.TunSlot to update to 'primary', got %q", d.state.TunSlot)
+	}
+
+	applyRoutePatch(t, d, commands)
+
+	if d.state.TunSlot != "primary" {
+		t.Fatalf("expected TunSlot to remain 'primary' after patch, got %q", d.state.TunSlot)
+	}
+	if d.state.Slots[0].Name != "primary" {
+		t.Fatalf("expected slot 0 name to be 'primary', got %q", d.state.Slots[0].Name)
+	}
+}
+
+func TestRenameSlotValidation(t *testing.T) {
+	d, commands := routesDashboard(t)
+
+	// Duplicate name
+	d.renameSlot(0)
+	entry := routeDialogEntry(t, d)
+	entry.SetText("second")
+	tapRouteDialogButton(t, d, "Save")
+	if d.notice.Text != "Slot name already exists" {
+		t.Fatalf("expected duplicate notification, got %q", d.notice.Text)
+	}
+	select {
+	case <-commands:
+		t.Fatal("patch sent for duplicate slot name")
+	default:
+	}
+
+	// Empty name
+	d.renameSlot(0)
+	entry = routeDialogEntry(t, d)
+	entry.SetText("   ")
+	tapRouteDialogButton(t, d, "Save")
+	if d.notice.Text != "Enter a valid slot name" {
+		t.Fatalf("expected empty name notification, got %q", d.notice.Text)
+	}
+	select {
+	case <-commands:
+		t.Fatal("patch sent for empty slot name")
+	default:
+	}
+
+	// URL-like name containing ://
+	d.renameSlot(0)
+	entry = routeDialogEntry(t, d)
+	entry.SetText("vless://invalid")
+	tapRouteDialogButton(t, d, "Save")
+	if d.notice.Text != "Slot name cannot contain ://" {
+		t.Fatalf("expected URL name notification, got %q", d.notice.Text)
+	}
+	select {
+	case <-commands:
+		t.Fatal("patch sent for URL slot name")
+	default:
+	}
+}
+
+func TestRenameIconButtonAndTooltip(t *testing.T) {
+	d, _ := routesDashboard(t)
+	d.selectedSlot = "second"
+	d.render()
+
+	// Verify no standalone "Rename slot" button exists
+	standaloneBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && b.Text == "Rename slot"
+	})
+	if len(standaloneBtns) > 0 {
+		t.Fatalf("expected no standalone 'Rename slot' button, found %d", len(standaloneBtns))
+	}
+
+	// Verify tooltip icon button exists
+	renameBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		btn, ok := obj.(*tooltipIconButton)
+		return ok && btn.Icon == theme.DocumentCreateIcon()
+	})
+	if len(renameBtns) != 1 {
+		t.Fatalf("expected 1 rename tooltipIconButton, got %d", len(renameBtns))
+	}
+	iconBtn := renameBtns[0].(*tooltipIconButton)
+
+	// Verify tooltip text object exists
+	tipTexts := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		txt, ok := obj.(*canvas.Text)
+		return ok && txt.Text == "Rename slot"
+	})
+	if len(tipTexts) != 1 {
+		t.Fatalf("expected 1 'Rename slot' text object, got %d", len(tipTexts))
+	}
+	tipText := tipTexts[0].(*canvas.Text)
+	if tipText.Visible() {
+		t.Fatal("expected tooltip text to be initially hidden")
+	}
+
+	// Test hover in
+	iconBtn.MouseIn(nil)
+	if !tipText.Visible() {
+		t.Fatal("expected tooltip text to be visible on MouseIn")
+	}
+
+	// Test hover out
+	iconBtn.MouseOut()
+	if tipText.Visible() {
+		t.Fatal("expected tooltip text to be hidden on MouseOut")
+	}
+
+	// Test tap on icon button triggers rename dialog
+	iconBtn.Tapped(nil)
+	entry := routeDialogEntry(t, d)
+	if entry == nil || entry.Text != "second" {
+		t.Fatalf("expected rename dialog with prefilled text 'second', got %v", entry)
+	}
+}
+
+func TestSlotDeleteIconButtonAndTooltip(t *testing.T) {
+	d, commands := routesDashboard(t)
+	d.selectedSlot = "second"
+	d.render()
+
+	// Verify no standalone "Delete slot" text button exists
+	standaloneBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && b.Text == "Delete slot"
+	})
+	if len(standaloneBtns) > 0 {
+		t.Fatalf("expected no standalone 'Delete slot' button, found %d", len(standaloneBtns))
+	}
+
+	// Verify delete tooltip icon button exists
+	delBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		btn, ok := obj.(*tooltipIconButton)
+		return ok && btn.Icon == theme.DeleteIcon()
+	})
+	if len(delBtns) != 1 {
+		t.Fatalf("expected 1 delete tooltipIconButton, got %d", len(delBtns))
+	}
+	iconBtn := delBtns[0].(*tooltipIconButton)
+
+	// Verify tooltip text object exists
+	tipTexts := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		txt, ok := obj.(*canvas.Text)
+		return ok && txt.Text == "Delete slot"
+	})
+	if len(tipTexts) != 1 {
+		t.Fatalf("expected 1 'Delete slot' text object, got %d", len(tipTexts))
+	}
+	tipText := tipTexts[0].(*canvas.Text)
+	if tipText.Visible() {
+		t.Fatal("expected tooltip text to be initially hidden")
+	}
+
+	// Test hover in
+	iconBtn.MouseIn(nil)
+	if !tipText.Visible() {
+		t.Fatal("expected tooltip text to be visible on MouseIn")
+	}
+
+	// Test hover out
+	iconBtn.MouseOut()
+	if tipText.Visible() {
+		t.Fatal("expected tooltip text to be hidden on MouseOut")
+	}
+
+	// Test tap on delete icon button triggers confirm dialog
+	iconBtn.Tapped(nil)
+	confirmBtns := findRouteObjects(d.window.Canvas().Overlays().Top(), func(obj fyne.CanvasObject) bool {
+		btn, ok := obj.(*widget.Button)
+		return ok && (btn.Importance == widget.HighImportance || btn.Text == "Yes" || btn.Icon == theme.ConfirmIcon())
+	})
+	if len(confirmBtns) != 1 {
+		t.Fatalf("expected 1 confirm button, got %d", len(confirmBtns))
+	}
+	test.Tap(confirmBtns[0].(*widget.Button))
+
+	// Verify slot deletion command sent
+	applyRoutePatch(t, d, commands)
+	if len(d.state.Slots) != 2 {
+		t.Fatalf("expected 2 slots after delete, got %d", len(d.state.Slots))
+	}
+	if d.state.SlotIndexByName("second") >= 0 {
+		t.Fatal("expected 'second' slot to be deleted")
+	}
+}
+
+func TestSlotEnableSlider(t *testing.T) {
+	d, commands := routesDashboard(t)
+	d.selectedSlot = "second"
+	d.render()
+
+	// Find the compact switch for slot enable
+	switches := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		sw, ok := obj.(*connectionSwitch)
+		return ok && sw.Compact
+	})
+	if len(switches) != 1 {
+		t.Fatalf("expected 1 compact connectionSwitch, got %d", len(switches))
+	}
+	slotSwitch := switches[0].(*connectionSwitch)
+	if !slotSwitch.Checked {
+		t.Fatal("expected slot switch to be checked initially")
+	}
+
+	// Find the Enabled text
+	statusTexts := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		txt, ok := obj.(*canvas.Text)
+		return ok && txt.Text == "Enabled"
+	})
+	if len(statusTexts) != 1 {
+		t.Fatalf("expected 1 'Enabled' text, got %d", len(statusTexts))
+	}
+
+	// Tap switch to disable slot
+	test.Tap(slotSwitch)
+	if slotSwitch.Checked {
+		t.Fatal("expected slot switch to be unchecked after tap")
+	}
+
+	// Check text changed to "Disabled"
+	disabledTexts := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		txt, ok := obj.(*canvas.Text)
+		return ok && txt.Text == "Disabled"
+	})
+	if len(disabledTexts) != 1 {
+		t.Fatalf("expected 1 'Disabled' text, got %d", len(disabledTexts))
+	}
+
+	applyRoutePatch(t, d, commands)
+	if d.state.Slots[1].Enabled {
+		t.Fatal("expected slot 1 to be disabled in state")
+	}
+}
+func TestSlotTitleDisplaysFullName(t *testing.T) {
+	d, _ := routesDashboard(t)
+	d.selectedSlot = "second"
+	d.render()
+
+	// Verify slot title label exists and contains full name "second"
+	labels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		l, ok := obj.(*widget.Label)
+		return ok && l.Text == "second"
+	})
+	if len(labels) != 1 {
+		t.Fatalf("expected 1 label with text 'second', got %d", len(labels))
+	}
+	titleLabel := labels[0].(*widget.Label)
+	if titleLabel.Size().Width < 40 {
+		t.Fatalf("expected title label width >= 40px, got %.2f (would render as '...')", titleLabel.Size().Width)
+	}
+}
+

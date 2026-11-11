@@ -366,6 +366,51 @@ func (d *dashboard) addSlot() {
 	})
 }
 
+func (d *dashboard) renameSlot(slotIndex int) {
+	if d.state == nil || slotIndex < 0 || slotIndex >= len(d.state.Slots) {
+		d.notify("This slot no longer exists")
+		return
+	}
+	oldName := d.state.Slots[slotIndex].Name
+	d.ask("Rename slot", "Slot name", oldName, "Save", func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			d.notify("Enter a valid slot name")
+			return
+		}
+		if strings.Contains(name, "://") {
+			d.notify("Slot name cannot contain ://")
+			return
+		}
+		if name == oldName {
+			return
+		}
+		for index, slot := range d.state.Slots {
+			if index != slotIndex && slot.Name == name {
+				d.notify("Slot name already exists")
+				return
+			}
+		}
+		data, _ := json.Marshal(d.state.Slots)
+		var slots []store.Slot
+		_ = json.Unmarshal(data, &slots)
+		if slotIndex >= len(slots) || slots[slotIndex].Name != oldName {
+			return
+		}
+		slots[slotIndex].Name = name
+		patch := map[string]any{"slots": slots}
+		if d.state.TunSlot == oldName {
+			patch["tun_slot"] = name
+			d.state.TunSlot = name
+		}
+		if d.selectedSlot == oldName {
+			d.selectedSlot = name
+		}
+		d.state.Slots = slots
+		d.patch(patch)
+	})
+}
+
 func (d *dashboard) removeMain(slotIndex, mainIndex int) {
 	slotName, name := d.state.Slots[slotIndex].Name, d.state.Slots[slotIndex].Mains[mainIndex].Name
 	d.confirm("Delete exit", "Remove "+name+" from this failover slot?", func() {

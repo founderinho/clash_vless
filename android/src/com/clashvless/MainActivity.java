@@ -2,6 +2,7 @@ package com.clashvless;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
@@ -11,6 +12,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.net.VpnService;
@@ -18,9 +20,13 @@ import android.os.Build;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputType;
+import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -63,6 +69,8 @@ public class MainActivity extends Activity {
     private TextView logView;
     private final Set<String> logLevels = new HashSet<>(Arrays.asList("INFO", "WARN", "ERROR"));
     private String logModule = "", logQuery = "";
+    private String selectedSlotName;
+    private boolean slotsMenuExpanded;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -303,9 +311,125 @@ public class MainActivity extends Activity {
         JSONArray slots = st.optJSONArray("slots");
         String tunSlot = tunSlot(st);
         JSONObject s = Ctl.status;
-        for (int i = 0; slots != null && i < slots.length(); i++) {
-            final int si = i;
+
+        if (slots == null || slots.length() == 0) {
+            body.addView(card("", "No failover slots configured. Tap \"Add failover slot\" to create one."));
+            body.addView(card("Routing compatibility", "Vision exits are direct-only. Plain exits can use any hop; REALITY exits require a non-Vision hop."));
+            return;
+        }
+
+        if (!slotsMenuExpanded) {
+            selectedSlotName = tunSlot;
+        }
+        int selectedIndex = -1;
+        JSONObject selectedSlot = null;
+        for (int i = 0; i < slots.length(); i++) {
             JSONObject sl = slots.optJSONObject(i);
+            if (sl.optString("name").equals(selectedSlotName)) {
+                selectedIndex = i;
+                selectedSlot = sl;
+                break;
+            }
+        }
+        if (selectedSlot == null) {
+            for (int i = 0; i < slots.length(); i++) {
+                JSONObject sl = slots.optJSONObject(i);
+                if (sl.optString("name").equals(tunSlot)) {
+                    selectedIndex = i;
+                    selectedSlot = sl;
+                    selectedSlotName = tunSlot;
+                    break;
+                }
+            }
+        }
+        if (selectedSlot == null && slots.length() > 0) {
+            selectedIndex = 0;
+            selectedSlot = slots.optJSONObject(0);
+            selectedSlotName = selectedSlot.optString("name");
+        }
+
+        LinearLayout slotTabsMenu = new LinearLayout(this);
+        slotTabsMenu.setOrientation(LinearLayout.VERTICAL);
+        slotTabsMenu.setPadding(dp(12), dp(10), dp(12), dp(10));
+        slotTabsMenu.setBackground(round(CARD, 10));
+        LinearLayout.LayoutParams menuParams = new LinearLayout.LayoutParams(-1, -2);
+        menuParams.setMargins(0, 0, 0, dp(8));
+        slotTabsMenu.setLayoutParams(menuParams);
+
+        LinearLayout menuHeader = new LinearLayout(this);
+        menuHeader.setOrientation(LinearLayout.HORIZONTAL);
+        menuHeader.setGravity(Gravity.CENTER_VERTICAL);
+        menuHeader.setPadding(0, 0, 0, dp(6));
+
+        LinearLayout titleCol = new LinearLayout(this);
+        titleCol.setOrientation(LinearLayout.VERTICAL);
+        titleCol.addView(text("FAILOVER SLOTS", 12, ACCENT, true));
+        titleCol.addView(text(slotsMenuExpanded ? "All slots shown" : "Showing VPN slot only", 11, MUTED, false));
+        menuHeader.addView(titleCol, new LinearLayout.LayoutParams(0, -2, 1));
+
+        Button expandBtn = btn(slotsMenuExpanded ? "Collapse" : "Expand", false, () -> {
+            slotsMenuExpanded = !slotsMenuExpanded;
+            if (!slotsMenuExpanded) {
+                selectedSlotName = tunSlot;
+            }
+            render();
+        });
+        expandBtn.setContentDescription(slotsMenuExpanded ? "Collapse slot tabs" : "Expand slot tabs");
+        menuHeader.addView(expandBtn);
+        slotTabsMenu.addView(menuHeader);
+
+        for (int i = 0; i < slots.length(); i++) {
+            JSONObject sl = slots.optJSONObject(i);
+            String name = sl.optString("name");
+            boolean isTun = name.equals(tunSlot);
+            if (!slotsMenuExpanded && !isTun) {
+                continue;
+            }
+            boolean isSelected = name.equals(selectedSlotName);
+
+            LinearLayout tabItem = new LinearLayout(this);
+            tabItem.setOrientation(LinearLayout.HORIZONTAL);
+            tabItem.setGravity(Gravity.CENTER_VERTICAL);
+            tabItem.setPadding(dp(12), dp(8), dp(12), dp(8));
+            tabItem.setMinimumHeight(dp(44));
+
+            GradientDrawable tabBg = round(isSelected ? Color.rgb(27, 37, 44) : Color.TRANSPARENT, 8);
+            if (isSelected) {
+                tabBg.setStroke(dp(1), ACCENT);
+            } else {
+                tabBg.setStroke(dp(1), Color.rgb(43, 53, 65));
+            }
+            tabItem.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3368d5bd), tabBg, round(Color.WHITE, 8)));
+
+            LinearLayout tabTexts = new LinearLayout(this);
+            tabTexts.setOrientation(LinearLayout.VERTICAL);
+            tabTexts.addView(text(name, 14, isSelected ? ACCENT : TEXT, true));
+            String portDesc = "socks5://" + listenHost(st) + ":" + sl.optInt("port");
+            tabTexts.addView(text(portDesc, 11, MUTED, false));
+            tabItem.addView(tabTexts, new LinearLayout.LayoutParams(0, -2, 1));
+
+            if (isTun) {
+                TextView vpnBadge = text("VPN", 10, ACCENT, true);
+                vpnBadge.setPadding(dp(6), dp(2), dp(6), dp(2));
+                vpnBadge.setBackground(round(Color.rgb(19, 44, 40), 4));
+                tabItem.addView(vpnBadge);
+            }
+
+            final String tabSlotName = name;
+            tabItem.setOnClickListener(v -> {
+                selectedSlotName = tabSlotName;
+                render();
+            });
+
+            LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(-1, -2);
+            itemParams.setMargins(0, dp(2), 0, dp(2));
+            slotTabsMenu.addView(tabItem, itemParams);
+        }
+        body.addView(slotTabsMenu);
+
+        if (selectedSlot != null) {
+            final int si = selectedIndex;
+            JSONObject sl = selectedSlot;
             String name = sl.optString("name");
             String live = "";
             JSONArray liveSlots = s == null ? null : s.optJSONArray("Slots");
@@ -313,11 +437,84 @@ public class MainActivity extends Activity {
                 JSONObject current = liveSlots.optJSONObject(k);
                 if (name.equals(current.optString("Name"))) live = " | " + line(current);
             }
-            LinearLayout slot = card(name, "socks5://" + listenHost(st) + ":" + sl.optInt("port") + live + (name.equals(tunSlot) ? " | VPN slot" : ""));
-            slot.addView(toggle("Slot enabled", sl.optBoolean("enabled"), on -> editSlot(st, si, sl, "enabled", on)));
-            slot.addView(row(btn("Edit port", false, () -> editPort(st, si)),
-                    btn("Use for VPN", false, () -> Ctl.patch("tun_slot", name)),
-                    btn("Delete slot", false, () -> removeSlot(st, si))));
+            LinearLayout titleRow = new LinearLayout(this);
+            titleRow.setOrientation(LinearLayout.HORIZONTAL);
+            titleRow.setGravity(Gravity.CENTER_VERTICAL);
+            titleRow.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+            TextView nameView = text(name, 15, TEXT, true);
+            nameView.setSingleLine(true);
+            nameView.setEllipsize(TextUtils.TruncateAt.END);
+            titleRow.addView(nameView);
+
+            ImageView renameIcon = new ImageView(this);
+            renameIcon.setImageResource(R.drawable.clashvless_edit);
+            renameIcon.setColorFilter(MUTED);
+            int ripPad = dp(4);
+            renameIcon.setPadding(ripPad, ripPad, ripPad, ripPad);
+            LinearLayout.LayoutParams ripParams = new LinearLayout.LayoutParams(dp(24), dp(24));
+            ripParams.setMargins(dp(8), 0, 0, 0);
+            renameIcon.setLayoutParams(ripParams);
+            renameIcon.setClickable(true);
+            renameIcon.setFocusable(true);
+            if (Build.VERSION.SDK_INT >= 26) {
+                renameIcon.setTooltipText("Rename slot");
+            }
+            renameIcon.setContentDescription("Rename slot");
+            renameIcon.setOnClickListener(v -> renameSlot(st, si));
+            titleRow.addView(renameIcon);
+
+            TextView sep = text("|", 13, MUTED, false);
+            sep.setPadding(dp(8), 0, dp(8), 0);
+            titleRow.addView(sep);
+
+            boolean isSlotEnabled = sl.optBoolean("enabled");
+            TextView statusText = text(isSlotEnabled ? "Enabled" : "Disabled", 13, isSlotEnabled ? TEXT : MUTED, false);
+            statusText.setPadding(0, 0, dp(6), 0);
+            titleRow.addView(statusText);
+
+            Switch enableSwitch = new Switch(this);
+            enableSwitch.setChecked(isSlotEnabled);
+            if (Build.VERSION.SDK_INT >= 21) {
+                enableSwitch.setThumbTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{ACCENT, MUTED}));
+                enableSwitch.setTrackTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{Color.rgb(36, 103, 89), Color.rgb(51, 66, 88)}));
+            }
+            enableSwitch.setOnCheckedChangeListener((view, on) -> {
+                statusText.setText(on ? "Enabled" : "Disabled");
+                statusText.setTextColor(on ? TEXT : MUTED);
+                editSlot(st, si, sl, "enabled", on);
+            });
+            titleRow.addView(enableSwitch);
+
+            View titleSpacer = new View(this);
+            titleRow.addView(titleSpacer, new LinearLayout.LayoutParams(0, 1, 1.0f));
+
+            ImageView deleteIcon = new ImageView(this);
+            deleteIcon.setImageResource(R.drawable.clashvless_delete);
+            deleteIcon.setColorFilter(MUTED);
+            int delPad = dp(4);
+            deleteIcon.setPadding(delPad, delPad, delPad, delPad);
+            LinearLayout.LayoutParams delParams = new LinearLayout.LayoutParams(dp(24), dp(24));
+            deleteIcon.setLayoutParams(delParams);
+            deleteIcon.setClickable(true);
+            deleteIcon.setFocusable(true);
+            if (Build.VERSION.SDK_INT >= 26) {
+                deleteIcon.setTooltipText("Delete slot");
+            }
+            deleteIcon.setContentDescription("Delete slot");
+            deleteIcon.setOnClickListener(v -> removeSlot(st, si));
+            titleRow.addView(deleteIcon);
+
+            LinearLayout slot = card(titleRow, "socks5://" + listenHost(st) + ":" + sl.optInt("port") + live + (name.equals(tunSlot) ? " | VPN slot" : ""));
+
+            Button vpnBtn = btn(name.equals(tunSlot) ? "Selected for VPN" : "Use for VPN", false,
+                    name.equals(tunSlot) ? () -> {} : () -> Ctl.patch("tun_slot", name));
+            if (name.equals(tunSlot)) vpnBtn.setEnabled(false);
+
+            slot.addView(equalRow(
+                    vpnBtn,
+                    btn("Edit port", false, () -> editPort(st, si))));
+
             JSONArray mains = sl.optJSONArray("mains");
             for (int m = 0; mains != null && m < mains.length(); m++) {
                 final int mi = m;
@@ -330,6 +527,7 @@ public class MainActivity extends Activity {
             slot.addView(btn("Add final exit", false, () -> askMain(st, si)));
             body.addView(slot);
         }
+
         body.addView(card("Routing compatibility", "Vision exits are direct-only. Plain exits can use any hop; REALITY exits require a non-Vision hop."));
     }
 
@@ -595,11 +793,45 @@ public class MainActivity extends Activity {
 
     private void addSlot(JSONObject st) {
         ask("New slot name", "slot" + (st.optJSONArray("slots").length() + 1), InputType.TYPE_CLASS_TEXT, name -> {
+            name = name.trim();
+            if (name.isEmpty()) { toast("Enter a valid slot name"); return; }
+            if (name.contains("://")) { toast("Slot name cannot contain ://"); return; }
             try {
                 JSONArray slots = copy(st.optJSONArray("slots"));
                 for (int i = 0; i < slots.length(); i++) if (name.equals(slots.optJSONObject(i).optString("name"))) { toast("Slot name already exists"); return; }
                 slots.put(new JSONObject().put("name", name).put("port", freePort(st)).put("enabled", true).put("mains", new JSONArray()));
+                slotsMenuExpanded = true;
+                selectedSlotName = name;
                 Ctl.patch("slots", slots);
+            } catch (Exception e) { failed(e); }
+        });
+    }
+
+    private void renameSlot(JSONObject st, int si) {
+        JSONArray slots = copy(st.optJSONArray("slots"));
+        JSONObject sl = slots.optJSONObject(si);
+        String oldName = sl.optString("name");
+        ask("Rename slot", oldName, InputType.TYPE_CLASS_TEXT, name -> {
+            name = name.trim();
+            if (name.isEmpty()) { toast("Enter a valid slot name"); return; }
+            if (name.contains("://")) { toast("Slot name cannot contain ://"); return; }
+            if (name.equals(oldName)) return;
+            for (int i = 0; i < slots.length(); i++) {
+                if (i != si && name.equals(slots.optJSONObject(i).optString("name"))) {
+                    toast("Slot name already exists");
+                    return;
+                }
+            }
+            try {
+                sl.put("name", name);
+                JSONObject patch = new JSONObject().put("slots", slots);
+                if (oldName.equals(st.optString("tun_slot"))) {
+                    patch.put("tun_slot", name);
+                }
+                if (oldName.equals(selectedSlotName)) {
+                    selectedSlotName = name;
+                }
+                Ctl.patch(patch);
             } catch (Exception e) { failed(e); }
         });
     }
@@ -640,7 +872,16 @@ public class MainActivity extends Activity {
     private void removeSlot(JSONObject st, int si) {
         JSONArray slots = copy(st.optJSONArray("slots"));
         if (slots.length() <= 1) { toast("The last slot cannot be removed"); return; }
-        confirm("Delete " + slots.optJSONObject(si).optString("name") + "?", () -> { slots.remove(si); Ctl.patch("slots", slots); });
+        String name = slots.optJSONObject(si).optString("name");
+        confirm("Delete " + name + "?", () -> {
+            try {
+                slots.remove(si);
+                if (name.equals(selectedSlotName)) {
+                    selectedSlotName = tunSlot(st);
+                }
+                Ctl.patch("slots", slots);
+            } catch (Exception e) { failed(e); }
+        });
     }
 
     private void editSlot(JSONObject st, int si, JSONObject original, String key, Object value) {
@@ -709,6 +950,10 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout card(String title, String subtitle) {
+        return card(text(title, 15, TEXT, true), subtitle);
+    }
+
+    private LinearLayout card(View titleView, String subtitle) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -716,7 +961,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
         params.setMargins(0, 0, 0, dp(8));
         card.setLayoutParams(params);
-        card.addView(text(title, 15, TEXT, true));
+        if (titleView != null) card.addView(titleView);
         if (subtitle != null && !subtitle.isEmpty()) card.addView(text(subtitle, 11, MUTED, false));
         return card;
     }
@@ -807,6 +1052,17 @@ public class MainActivity extends Activity {
         return row;
     }
 
+    private LinearLayout equalRow(View... views) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        for (View view : views) {
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -2, 1);
+            params.setMargins(dp(2), dp(2), dp(2), dp(2));
+            row.addView(view, params);
+        }
+        return row;
+    }
+
     private void addMetric(LinearLayout row, String name, String value) {
         LinearLayout metric = new LinearLayout(this);
         metric.setOrientation(LinearLayout.VERTICAL);
@@ -833,28 +1089,182 @@ public class MainActivity extends Activity {
     }
 
     private void ask(String title, String initial, int variation, Consumer<String> ok) {
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(20), dp(18), dp(20), dp(18));
+        GradientDrawable bg = round(CARD, 12);
+        bg.setStroke(dp(1), Color.rgb(43, 53, 65));
+        root.setBackground(bg);
+
+        TextView titleView = text(title, 16, TEXT, true);
+        titleView.setPadding(0, 0, 0, dp(14));
+        root.addView(titleView);
+
         EditText input = new EditText(this);
         input.setInputType(variation == InputType.TYPE_CLASS_NUMBER ? variation : InputType.TYPE_CLASS_TEXT | variation);
         input.setText(initial);
+        if (initial != null) {
+            input.setSelection(initial.length());
+        }
         input.setTextColor(TEXT);
         input.setHintTextColor(MUTED);
-        int pad = dp(18);
-        input.setPadding(pad, pad, pad, pad);
-        new AlertDialog.Builder(this).setTitle(title).setView(input)
-                .setPositiveButton("Save", (dialog, which) -> {
-                    String value = input.getText().toString().trim();
-                    if (!value.isEmpty() && !Ctl.connected) toast("Daemon not connected");
-                    else if (!value.isEmpty() || title.contains("proxy") || title.contains("DNS") || title.contains("TUN interface")) ok.accept(value);
-                })
-                .setNegativeButton("Cancel", null).show();
+        input.setTextSize(14);
+        int padH = dp(12), padV = dp(10);
+        input.setPadding(padH, padV, padH, padV);
+        input.setSingleLine(true);
+
+        GradientDrawable inputBg = round(Color.rgb(31, 39, 49), 8);
+        inputBg.setStroke(dp(1), Color.rgb(43, 53, 65));
+        input.setBackground(inputBg);
+
+        input.setOnFocusChangeListener((v, hasFocus) -> {
+            inputBg.setStroke(dp(1), hasFocus ? ACCENT : Color.rgb(43, 53, 65));
+        });
+
+        LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        inputParams.setMargins(0, 0, 0, dp(18));
+        root.addView(input, inputParams);
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.setGravity(Gravity.END);
+
+        Button cancelBtn = btn("Cancel", false, dialog::dismiss);
+        Button saveBtn = btn("Save", true, () -> {
+            String value = input.getText().toString().trim();
+            if (!value.isEmpty() && !Ctl.connected) {
+                toast("Daemon not connected");
+            } else if (!value.isEmpty() || title.contains("proxy") || title.contains("DNS") || title.contains("TUN interface")) {
+                dialog.dismiss();
+                ok.accept(value);
+            }
+        });
+
+        buttons.addView(cancelBtn);
+        View btnSpacer = new View(this);
+        buttons.addView(btnSpacer, new LinearLayout.LayoutParams(dp(8), 1));
+        buttons.addView(saveBtn);
+        root.addView(buttons);
+
+        dialog.setContentView(root);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            int screenWidth = getResources().getDisplayMetrics().widthPixels;
+            int dialogWidth = Math.min((int) (screenWidth * 0.90f), dp(400));
+            dialog.getWindow().setLayout(dialogWidth, ViewGroup.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        }
+
+        input.setOnEditorActionListener((v, actionId, event) -> {
+            saveBtn.performClick();
+            return true;
+        });
+
+        dialog.show();
+        input.requestFocus();
     }
 
     private void choose(String title, String[] items, IntConsumer pick) {
-        new AlertDialog.Builder(this).setTitle(title).setItems(items, (dialog, which) -> pick.accept(which)).show();
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(20), dp(18), dp(20), dp(18));
+        GradientDrawable bg = round(CARD, 12);
+        bg.setStroke(dp(1), Color.rgb(43, 53, 65));
+        root.setBackground(bg);
+
+        TextView titleView = text(title, 16, TEXT, true);
+        titleView.setPadding(0, 0, 0, dp(12));
+        root.addView(titleView);
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout itemsList = new LinearLayout(this);
+        itemsList.setOrientation(LinearLayout.VERTICAL);
+
+        for (int i = 0; i < items.length; i++) {
+            final int index = i;
+            TextView item = text(items[i], 14, TEXT, false);
+            item.setPadding(dp(12), dp(10), dp(12), dp(10));
+            GradientDrawable itemBg = round(Color.TRANSPARENT, 6);
+            item.setBackground(new RippleDrawable(ColorStateList.valueOf(0x3368d5bd), itemBg, round(Color.WHITE, 6)));
+            item.setClickable(true);
+            item.setFocusable(true);
+            item.setOnClickListener(v -> {
+                dialog.dismiss();
+                pick.accept(index);
+            });
+            itemsList.addView(item);
+        }
+        scroll.addView(itemsList);
+        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f);
+        scrollParams.setMargins(0, 0, 0, dp(12));
+        root.addView(scroll, scrollParams);
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.setGravity(Gravity.END);
+        Button cancelBtn = btn("Cancel", false, dialog::dismiss);
+        buttons.addView(cancelBtn);
+        root.addView(buttons);
+
+        dialog.setContentView(root);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            int screenWidth = getResources().getDisplayMetrics().widthPixels;
+            int screenHeight = getResources().getDisplayMetrics().heightPixels;
+            int dialogWidth = Math.min((int) (screenWidth * 0.90f), dp(380));
+            int dialogHeight = Math.min((int) (screenHeight * 0.70f), ViewGroup.LayoutParams.WRAP_CONTENT);
+            dialog.getWindow().setLayout(dialogWidth, dialogHeight);
+        }
+        dialog.show();
     }
 
     private void confirm(String question, Runnable yes) {
-        new AlertDialog.Builder(this).setMessage(question).setPositiveButton("Confirm", (dialog, which) -> yes.run()).setNegativeButton("Cancel", null).show();
+        Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(20), dp(18), dp(20), dp(18));
+        GradientDrawable bg = round(CARD, 12);
+        bg.setStroke(dp(1), Color.rgb(43, 53, 65));
+        root.setBackground(bg);
+
+        TextView msgView = text(question, 15, TEXT, false);
+        msgView.setPadding(0, 0, 0, dp(18));
+        root.addView(msgView);
+
+        LinearLayout buttons = new LinearLayout(this);
+        buttons.setOrientation(LinearLayout.HORIZONTAL);
+        buttons.setGravity(Gravity.END);
+
+        Button cancelBtn = btn("Cancel", false, dialog::dismiss);
+        Button confirmBtn = btn("Confirm", true, () -> {
+            dialog.dismiss();
+            yes.run();
+        });
+
+        buttons.addView(cancelBtn);
+        View btnSpacer = new View(this);
+        buttons.addView(btnSpacer, new LinearLayout.LayoutParams(dp(8), 1));
+        buttons.addView(confirmBtn);
+        root.addView(buttons);
+
+        dialog.setContentView(root);
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            int screenWidth = getResources().getDisplayMetrics().widthPixels;
+            int dialogWidth = Math.min((int) (screenWidth * 0.90f), dp(360));
+            dialog.getWindow().setLayout(dialogWidth, ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+        dialog.show();
     }
 
     private void copy(String value) {

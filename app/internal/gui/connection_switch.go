@@ -12,11 +12,18 @@ import (
 type connectionSwitch struct {
 	widget.BaseWidget
 	Checked   bool
+	Compact   bool
 	OnChanged func(bool)
 }
 
 func newConnectionSwitch(checked bool, changed func(bool)) *connectionSwitch {
 	control := &connectionSwitch{Checked: checked, OnChanged: changed}
+	control.ExtendBaseWidget(control)
+	return control
+}
+
+func newCompactSwitch(checked bool, changed func(bool)) *connectionSwitch {
+	control := &connectionSwitch{Checked: checked, Compact: true, OnChanged: changed}
 	control.ExtendBaseWidget(control)
 	return control
 }
@@ -50,17 +57,24 @@ type connectionSwitchRenderer struct {
 func (r *connectionSwitchRenderer) Layout(size fyne.Size) {
 	r.track.Resize(size)
 	r.track.CornerRadius = size.Height / 2
-	thumbSize := fyne.NewSize(size.Height-8, size.Height-8)
+	pad := float32(4)
+	if r.control.Compact {
+		pad = 2.5
+	}
+	thumbSize := fyne.NewSize(size.Height-pad*2, size.Height-pad*2)
 	r.thumb.Resize(thumbSize)
 	r.thumb.CornerRadius = thumbSize.Height / 2
-	x := float32(4)
+	x := pad
 	if r.control.Checked {
-		x = size.Width - thumbSize.Width - 4
+		x = size.Width - thumbSize.Width - pad
 	}
-	r.thumb.Move(fyne.NewPos(x, 4))
+	r.thumb.Move(fyne.NewPos(x, pad))
 }
 
 func (r *connectionSwitchRenderer) MinSize() fyne.Size {
+	if r.control.Compact {
+		return fyne.NewSize(38, 20)
+	}
 	return fyne.NewSize(56, 32)
 }
 

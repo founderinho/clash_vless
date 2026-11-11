@@ -109,4 +109,12 @@ final class Ctl {
             return false;
         }
     }
+
+    static boolean patch(JSONObject patch) {
+        try {
+            return cmd("patch", "patch", patch);
+        } catch (Exception e) {
+            return false;
+        }
+    }
 }

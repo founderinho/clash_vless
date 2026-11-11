@@ -176,7 +176,7 @@ func run(args []string) error {
 		fmt.Println("  main add <vless://> [slot]   add a main (Vision → direct/T1, plain → hop/T2)")
 		fmt.Println("  main rm <index> [slot]       remove a main")
 		fmt.Println("  slot                  list slots (failover pools, each on its own port)")
-		fmt.Println("  slot add [name] · rm <name> · port <name> <port> · tun <name> · enable|disable <name>")
+		fmt.Println("  slot add [name] · rename <name> <new> · rm <name> · port <name> <port> · tun <name> · enable|disable <name>")
 		fmt.Println("  fetch            refetch all subscriptions")
 		fmt.Println("  fetch-proxy [addr|off]  fetch subs through a proxy: socks5://h:p, http://h:p, or h:p (socks5)")
 		fmt.Println("  loglevel [none|error|warning|info|debug]  xray log verbosity")
@@ -926,6 +926,24 @@ func cmdSlot(st *store.State, args []string) error {
 			return err
 		}
 		fmt.Printf("✓ slot %q added on :%d\n", sl.Name, sl.Port)
+		return listMains(st)
+	case "rename":
+		if len(args) < 3 {
+			return errors.New("usage: clashvless slot rename <name|index> <new-name>")
+		}
+		i, err := slotIndexArg(st, args[1])
+		if err != nil {
+			return err
+		}
+		oldName := st.Slots[i].Name
+		newName := args[2]
+		if err := st.RenameSlot(i, newName); err != nil {
+			return err
+		}
+		if err := st.Save(); err != nil {
+			return err
+		}
+		fmt.Printf("✓ slot %q renamed to %q\n", oldName, newName)
 		return listMains(st)
 	case "rm", "remove", "del":
 		if len(args) < 2 {

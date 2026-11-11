@@ -32,7 +32,11 @@ or a **system-wide TUN** — with automatic tiered failover.
     showing only the selected slot where the first slot used to sit; the VPN slot is highlighted
     with a confirm icon and "· VPN" label, while the active tab uses HighImportance styling, and
     unselected non-VPN tabs sit on a rounded rectangle background. Adding a slot immediately selects
-    and opens the new slot without dropping back to the first tab.
+    and opens the new slot without dropping back to the first tab. Slots can be renamed via an edit icon placed to the right of the slot name
+    (with hover tooltip and pointer cursor), removing the standalone button; renaming validates for unique,
+    non-empty names and keeps `tun_slot` in sync. Slot enable is designed as a slider switch placed right
+    after the rename icon (`<rename icon> | <Enabled/Disabled> <slider>`), and a delete icon sits in the top
+    right corner of the slot box triggering the slot delete confirmation.
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
     desktop, and Android. `control.Event.Record` carries structured fields while `Line` preserves compatibility.
     Both embedded and standalone daemons route xray-core through the same hub; GUI mode no longer discards xray logs.
@@ -148,7 +152,12 @@ or a **system-wide TUN** — with automatic tiered failover.
   animated height and a right-edge chevron rotates to show state, pushing settings downward without overlapping the
   interface. Every category has a description
   and a clear current state, keeping selection visually separate from the settings themselves. All former controls remain
-  (including HWID and slot/main management).
+  (including HWID and slot/main management). In Exit routes, failover slots are presented in a vertical tabs menu
+  with an Expand/Collapse toggle: by default (collapsed), only the slot used for VPN is displayed, while expanding
+  reveals all slots. Slots can be renamed via a rename icon (`clashvless_edit`, with tooltip and content description)
+  placed immediately to the right of the slot name header, removing the standalone button. Renaming validates the new
+  name, updates state, and maintains VPN slot tracking. Action buttons sit beneath the slot switch with
+  'Selected for VPN'/'Use for VPN' alongside 'Edit port' and a full-width 'Delete slot'.
   `VpnSvc` publishes a live notification with the canonical resource-ID overload of `setSmallIcon`, using a dedicated
   white-on-transparent drawable. The application icon is a separate legacy mipmap plus an Android 8+ adaptive icon
   (including monochrome), so OEM notification rows that substitute the application icon do not depend on the small
@@ -189,7 +198,7 @@ than the screen gets clamped by Windows behind the toolkit's back, which cuts of
 an in-process daemon** if none is running (stops when the TUI exits), so a fresh install needs no shell:
 `clashvless tui` → the setup wizard opens on the empty config. `run` no longer requires a main (idles DOWN).
 Key commands: `add <url>`, `fetch`, `fetch-proxy [host:port|off]`, `loglevel [level]`, `main add <vless://> [slot]`,
-`slot [add|rm|port|tun|enable|disable …]`, `up [entry]`, `run`,
+`slot [add|rm|rename|port|tun|enable|disable …]`, `up [entry]`, `run`,
 `tun [on|off|status|dns <ip>|dns direct|dns tunnel|lan …|ipv6 …|icmp on|off]`, `whoami`, `hwid [<id>|new]`. See the default-case
 help block in `main.go`.
 For **TUN mode** the daemon must be elevated: `sudo clashvless run` (then attach the TUI as a client).
@@ -200,10 +209,11 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
 - **Topology**: per slot, a local SOCKS inbound → `main` outbound (the final exit). Empty `ListenAddr` means
   `127.0.0.1`; LAN exposure requires an explicit `0.0.0.0` setting. Windows GUI builds use `-H=windowsgui`,
   while the separate `clashvless-cli.exe` intentionally keeps the console subsystem.
-- **Slots** (`store.Slots`, managed in the TUI **Main** tab, CLI `slot`): the app now runs
+- **Slots** (`store.Slots`, managed in the TUI **Main** tab, CLI `slot`, desktop and Android GUI): the app now runs
   **multiple independent failover pools**, each a `Slot{Name, Port, Enabled, Mains []Main}`.
   A slot IS the old single-pool model — it keeps its own **best** main online on its **own SOCKS
-  port** via the T1→T2/T3 cascade. Every **enabled** slot runs concurrently (one `engine.slotRunner`
+  port** via the T1→T2/T3 cascade. Slots can be renamed via GUI dialogs, CLI `slot rename <slot> <new>`, or
+  `store.RenameSlot()`, which updates `store.TunSlot` automatically if the renamed slot was used for VPN. Every **enabled** slot runs concurrently (one `engine.slotRunner`
   each); point any app at any slot's port. One slot is the **TUN slot** (`store.TunSlot`,
   `TunSlotName()` falls back to the first enabled): the TUN bridge attaches to **that slot's port
   only**. Legacy single-pool state migrates into a default slot `"main"` on `ListenPort`. `main`

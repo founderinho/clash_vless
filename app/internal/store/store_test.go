@@ -82,3 +82,38 @@ func TestListenAddrUpgrade(t *testing.T) {
 		t.Fatalf("upgraded ListenHost() = %q, want the LAN reach it had before", got)
 	}
 }
+
+func TestRenameSlot(t *testing.T) {
+	state := &State{
+		Slots: []Slot{
+			{Name: "slot1", Port: 2084, Enabled: true},
+			{Name: "slot2", Port: 2086, Enabled: true},
+		},
+		TunSlot: "slot1",
+	}
+	// Valid rename of slot1 to primary
+	if err := state.RenameSlot(0, "primary"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if state.Slots[0].Name != "primary" {
+		t.Fatalf("slot name = %q, want 'primary'", state.Slots[0].Name)
+	}
+	if state.TunSlot != "primary" {
+		t.Fatalf("TunSlot = %q, want 'primary'", state.TunSlot)
+	}
+
+	// Duplicate name
+	if err := state.RenameSlot(0, "slot2"); err == nil {
+		t.Fatal("expected error on duplicate slot name")
+	}
+
+	// Empty name
+	if err := state.RenameSlot(0, "   "); err == nil {
+		t.Fatal("expected error on empty slot name")
+	}
+
+	// Name containing ://
+	if err := state.RenameSlot(0, "vless://invalid"); err == nil {
+		t.Fatal("expected error on URL slot name")
+	}
+}

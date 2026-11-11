@@ -188,7 +188,7 @@ type State struct {
 const DefaultUA = "Happ/3.13.0"
 
 // Version is the app version, shown in the TUI header and `version` command.
-const Version = "0.29.3"
+const Version = "0.30.1"
 
 func Dir() (string, error) {
 	base, err := os.UserConfigDir()
@@ -555,6 +555,31 @@ func (s *State) RemoveSlot(i int) {
 		return
 	}
 	s.Slots = append(s.Slots[:i], s.Slots[i+1:]...)
+}
+
+// RenameSlot renames the slot at index i and updates TunSlot if it pointed to the old name.
+func (s *State) RenameSlot(i int, newName string) error {
+	if i < 0 || i >= len(s.Slots) {
+		return errors.New("slot not found")
+	}
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return errors.New("slot name cannot be empty")
+	}
+	if strings.Contains(newName, "://") {
+		return errors.New("slot name cannot contain ://")
+	}
+	for idx, sl := range s.Slots {
+		if idx != i && sl.Name == newName {
+			return errors.New("slot name already exists")
+		}
+	}
+	oldName := s.Slots[i].Name
+	s.Slots[i].Name = newName
+	if s.TunSlot == oldName {
+		s.TunSlot = newName
+	}
+	return nil
 }
 
 // FreeSlotPort returns the lowest local port not already claimed by the main
