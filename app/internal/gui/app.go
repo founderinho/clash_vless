@@ -3,7 +3,6 @@
 package gui
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -24,8 +23,8 @@ import (
 	"clashvless/internal/control"
 	"clashvless/internal/engine"
 	"clashvless/internal/loghub"
+	"clashvless/internal/share"
 	"clashvless/internal/store"
-	"clashvless/internal/xray"
 )
 
 type dashboard struct {
@@ -454,38 +453,6 @@ func (d *dashboard) askMultiline(title, label, placeholder, confirm string, appl
 	d.showDialog(form)
 }
 
-// parseExitLinks reads pasted vless:// links, one per line, or a base64
-// subscription blob such as the one "Copy as subscription" produces.
-func parseExitLinks(text string) (links []string, invalid int) {
-	text = strings.TrimSpace(text)
-	if text != "" && !strings.Contains(strings.ToLower(text), "://") && len(strings.Fields(text)) == 1 {
-		for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
-			if decoded, err := encoding.DecodeString(text); err == nil {
-				text = string(decoded)
-				break
-			}
-		}
-	}
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		candidates := []string{line}
-		if strings.Count(strings.ToLower(line), "vless://") > 1 {
-			candidates = strings.Fields(line)
-		}
-		for _, candidate := range candidates {
-			if _, err := xray.VlessToOutbound(candidate, "main"); err != nil {
-				invalid++
-				continue
-			}
-			links = append(links, candidate)
-		}
-	}
-	return links, invalid
-}
-
 func (d *dashboard) addMain(slotIndex int) {
 	if d.state == nil || slotIndex < 0 || slotIndex >= len(d.state.Slots) {
 		d.notify("This slot no longer exists")
@@ -493,7 +460,7 @@ func (d *dashboard) addMain(slotIndex int) {
 	}
 	slotName := d.state.Slots[slotIndex].Name
 	d.askMultiline("Add final exits", "VLESS links", "vless://… — one per line, or a base64 subscription", "Add", func(value string) {
-		links, invalid := parseExitLinks(value)
+		links, invalid := share.ParseExits(value)
 		if len(links) == 0 {
 			d.notify("Enter at least one valid vless:// link")
 			return

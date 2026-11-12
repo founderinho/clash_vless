@@ -19,6 +19,7 @@ import (
 	"clashvless/branding"
 	"clashvless/internal/control"
 	"clashvless/internal/engine"
+	"clashvless/internal/share"
 )
 
 const (
@@ -124,7 +125,7 @@ func (d *dashboard) providersPanel() fyne.CanvasObject {
 		}
 		buttons = append(buttons,
 			d.iconButton(qrIcon(), "Export nodes as VLESS links", func() {
-				links, skipped := nodeShareLinks(sub.Nodes)
+				links, skipped := share.NodeLinks(sub.Nodes)
 				d.showShare("Export · "+sub.Name, links, skipped)
 			}),
 			d.iconButton(theme.DeleteIcon(), "Remove subscription", func() {
@@ -503,12 +504,12 @@ func (d *dashboard) nodeRow(probe engine.Probe, inUse bool, note string) fyne.Ca
 			d.notify("This node is no longer in your subscriptions")
 			return
 		}
-		link, err := nodeShareLink(*node)
+		link, err := share.NodeLink(*node)
 		if err != nil {
 			d.notify("Cannot export: " + err.Error())
 			return
 		}
-		d.showShare("Share entry node", []shareLink{link}, 0)
+		d.showShare("Share entry node", []share.Link{link}, 0)
 	})
 	pin := widget.NewButton("Pin", func() { d.patch(map[string]any{"pin_entry": name}) })
 	pin.Importance = widget.LowImportance

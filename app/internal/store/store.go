@@ -111,8 +111,23 @@ func (sl *Slot) MainIndex(u string) int {
 	return -1
 }
 
-// HasMain reports whether the slot already holds a main with this URL.
-func (sl *Slot) HasMain(u string) bool { return sl.MainIndex(u) >= 0 }
+// HasMain reports whether the slot already holds this exit. The #fragment is only
+// its name (an exported link carries the shown name), so it doesn't count.
+func (sl *Slot) HasMain(u string) bool {
+	for _, m := range sl.Mains {
+		if withoutName(m.URL) == withoutName(u) {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutName(u string) string {
+	if i := strings.IndexByte(u, '#'); i >= 0 {
+		return u[:i]
+	}
+	return u
+}
 
 // MoveMain moves the main at from to position to. Order is priority: within a
 // tier the cascade tries mains top to bottom.
@@ -214,7 +229,7 @@ type State struct {
 const DefaultUA = "Happ/3.13.0"
 
 // Version is the app version, shown in the TUI header and `version` command.
-const Version = "0.33.4"
+const Version = "0.34.0"
 
 func Dir() (string, error) {
 	base, err := os.UserConfigDir()

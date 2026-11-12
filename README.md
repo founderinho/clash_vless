@@ -83,6 +83,11 @@ The **Activity** page shares structured engine/xray records with the CLI and TUI
 module, or text (` & ` requires every term; ` | ` separates alternatives), with Basic/All/Errors presets,
 record counts, clear, and click-to-copy. Android provides the same severity, module, and text filters.
 
+**Export** works Marzban-style on desktop and Android: a QR code per link, Copy link, and for lists Copy all
+links or Copy as subscription (base64), for one exit, a whole slot, an entry node, or a provider's nodes.
+**Add final exits** takes several `vless://` links at once (one per line) or a base64 subscription, and skips
+exits the slot already has, even when the link carries a different name.
+
 ### Two ways to run
 
 The GUI checks whether a daemon's control socket is already up: if so it **attaches** to it; if not it

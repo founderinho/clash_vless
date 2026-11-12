@@ -18,6 +18,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"clashvless/internal/engine"
+	"clashvless/internal/share"
 	"clashvless/internal/store"
 )
 
@@ -173,9 +174,9 @@ func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fy
 		vpnBtn = widget.NewButton("Use for VPN", func() { d.patch(map[string]any{"tun_slot": slot.Name}) })
 	}
 	exportBtn := widget.NewButtonWithIcon("Export", qrIcon(), func() {
-		links := make([]shareLink, len(slot.Mains))
+		links := make([]share.Link, len(slot.Mains))
 		for i, main := range slot.Mains {
-			links[i] = mainShareLink(main)
+			links[i] = share.MainLink(main)
 		}
 		d.showShare("Export · "+slot.Name, links, 0)
 	})
@@ -303,7 +304,7 @@ func (d *dashboard) mainRow(slotIndex, mainIndex, count int, main store.Main, li
 	down.Disabled = mainIndex == count-1
 	actions := container.NewHBox(up, down,
 		d.iconButton(qrIcon(), "Share link / QR code", func() {
-			d.showShare("Share exit", []shareLink{mainShareLink(main)}, 0)
+			d.showShare("Share exit", []share.Link{share.MainLink(main)}, 0)
 		}),
 		d.iconButton(theme.DocumentCreateIcon(), "Rename exit", func() { d.renameMain(slotIndex, mainIndex) }),
 		d.iconButton(theme.DeleteIcon(), "Delete exit", func() { d.removeMain(slotIndex, mainIndex) }),

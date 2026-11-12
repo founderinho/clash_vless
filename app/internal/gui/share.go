@@ -3,11 +3,9 @@
 package gui
 
 import (
-	"encoding/base64"
 	"fmt"
 	"image"
 	"image/color"
-	"net/url"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -16,62 +14,14 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	"rsc.io/qr"
 
-	"clashvless/internal/store"
-	"clashvless/internal/xray"
+	"clashvless/internal/share"
 )
-
-type shareLink struct {
-	Name string
-	URL  string
-	Note string // why the link differs from the stored config, if it does
-}
-
-// mainShareLink names the exported link after the exit as it is shown here.
-func mainShareLink(main store.Main) shareLink {
-	link := main.URL
-	if parsed, err := url.Parse(main.URL); err == nil && strings.TrimSpace(main.Name) != "" {
-		parsed.Fragment, parsed.RawFragment = strings.TrimSpace(main.Name), ""
-		link = parsed.String()
-	}
-	return shareLink{Name: main.Name, URL: link}
-}
-
-func nodeShareLink(node store.Node) (shareLink, error) {
-	if strings.HasPrefix(strings.ToLower(node.Raw), "vless://") {
-		return shareLink{Name: node.Name, URL: node.Raw}, nil
-	}
-	link, dropped, err := xray.OutboundToVLESS(node.Outbound, node.Name)
-	if err != nil {
-		return shareLink{}, err
-	}
-	note := ""
-	if len(dropped) > 0 {
-		note = "Not representable in a link, left out: " + strings.Join(dropped, ", ")
-	}
-	return shareLink{Name: node.Name, URL: link, Note: note}, nil
-}
-
-func nodeShareLinks(nodes []store.Node) (links []shareLink, skipped int) {
-	for _, node := range nodes {
-		link, err := nodeShareLink(node)
-		if err != nil {
-			skipped++
-			continue
-		}
-		links = append(links, link)
-	}
-	return links, skipped
-}
 
 // qrImage renders text as dark modules on white with the standard quiet zone,
 // one pixel per module; the canvas scales it up without smoothing.
 func qrImage(text string) (image.Image, error) {
-	code, err := qr.Encode(text, qr.M)
-	if err != nil {
-		code, err = qr.Encode(text, qr.L)
-	}
+	code, err := share.QR(text)
 	if err != nil {
 		return nil, err
 	}
@@ -91,25 +41,9 @@ func qrImage(text string) (image.Image, error) {
 	return img, nil
 }
 
-func subscriptionBlob(links []shareLink) string {
-	urls := make([]string, len(links))
-	for i, link := range links {
-		urls[i] = link.URL
-	}
-	return base64.StdEncoding.EncodeToString([]byte(strings.Join(urls, "\n")))
-}
-
-func joinedLinks(links []shareLink) string {
-	urls := make([]string, len(links))
-	for i, link := range links {
-		urls[i] = link.URL
-	}
-	return strings.Join(urls, "\n")
-}
-
 // showShare is a Marzban-style export: a QR code per link with copy actions, and
 // whole-list copies (plain or as a base64 subscription) when there are several.
-func (d *dashboard) showShare(title string, links []shareLink, skipped int) {
+func (d *dashboard) showShare(title string, links []share.Link, skipped int) {
 	if len(links) == 0 {
 		d.notify("Nothing to export")
 		return
@@ -191,10 +125,10 @@ func (d *dashboard) showShare(title string, links []shareLink, skipped int) {
 		}
 		footer = append(footer, widget.NewSeparator(), muted(summary), container.NewHBox(
 			widget.NewButtonWithIcon("Copy all links", theme.ContentCopyIcon(), func() {
-				copyText(joinedLinks(links), fmt.Sprintf("%d links copied", len(links)))
+				copyText(share.Joined(links), fmt.Sprintf("%d links copied", len(links)))
 			}),
 			widget.NewButtonWithIcon("Copy as subscription", theme.ContentCopyIcon(), func() {
-				copyText(subscriptionBlob(links), "Base64 subscription copied")
+				copyText(share.Subscription(links), "Base64 subscription copied")
 			}),
 		))
 	}

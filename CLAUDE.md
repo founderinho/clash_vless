@@ -58,10 +58,13 @@ or a **system-wide TUN** — with automatic tiered failover.
     raise/lower arrows (reorder = priority), share (QR), rename, and delete.
     Exit edits go through `mainRef` (slot name + URL), so a confirmation or rename finishing after another client
     reordered the exits still hits the right one. "Add final exits" takes several links, one per line, or a base64
-    subscription. **Export** (`share.go`) is Marzban-style: a QR per link (`rsc.io/qr`, drawn black-on-white with a
+    subscription; `Slot.HasMain` skips exits already present, ignoring the `#fragment`, which is only a name (an
+    exported link carries the shown name, so re-importing a renamed exit used to duplicate it). **Export** (`share.go`)
+    is Marzban-style: a QR per link (`rsc.io/qr`, drawn black-on-white with a
     quiet zone), Copy link, and for lists Copy all links / Copy as subscription (base64). It exists per exit, per slot,
     per entry node, and per provider. Nodes without a `raw` link go through `xray.OutboundToVLESS`, and any setting a
-    link can't carry (e.g. `finalmask`) is named in the dialog. Status events rebuild the page at most every
+    link can't carry (e.g. `finalmask`) is named in the dialog. Links, QR encoding, and pasted-link parsing live in
+    `internal/share`, shared with Android. Status events rebuild the page at most every
     `statusRenderGap`, and only when the part the page shows changed (`statusKey`). A rebuild between press and
     release drops the click. Settings fields keep unsaved text in `drafts` across rebuilds and validate before
     saving (IP, IPv4 CIDR, MTU 576–9000, first-hop port collisions). The "Listen port" row is gone: slot ports are
@@ -81,6 +84,10 @@ or a **system-wide TUN** — with automatic tiered failover.
     engine's online → stability band → throughput → ping order, then latency, name, or provider order. Rows show
     In use / Pinned / Testing speed beside the name, then latency / Mbps / failure-rate tags, and a pinned node gets an Unpin banner.
     Names next to tags use `titleWithTags`, which shrinks only the name.
+  - `internal/share` — exits and entry nodes as VLESS links (`MainLink` puts the shown name in the fragment,
+    `NodeLink`), QR codes, base64 subscriptions, and pasted-exit parsing (`ParseExits`). The hidden `share` command
+    (handled in `main.go` before `store.Load`, so it never touches state) reads a JSON `Request` on stdin and writes
+    links with QR module strings, or parsed exits; the Android app runs it as a child process (`Exports.java`).
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
     desktop, and Android. `control.Event.Record` carries structured fields while `Line` preserves compatibility.
     Both embedded and standalone daemons route xray-core through the same hub; GUI mode no longer discards xray logs.
@@ -214,8 +221,21 @@ or a **system-wide TUN** — with automatic tiered failover.
   with an Expand/Collapse toggle: by default (collapsed), only the slot used for VPN is displayed, while expanding
   reveals all slots. Slots can be renamed via a rename icon (`clashvless_edit`, with tooltip and content description)
   placed immediately to the right of the slot name header, removing the standalone button. Renaming validates the new
-  name, updates state, and maintains VPN slot tracking. Action buttons sit beneath the slot switch with
-  'Selected for VPN'/'Use for VPN' alongside 'Edit port' and a full-width 'Delete slot'.
+  name, updates state, and maintains VPN slot tracking. The slot and its exits mirror the desktop as spaced cards:
+  the slot card has a `slotStatus` box tinted by state (tag such as "T2 Country hop | 187 ms", "First hop only",
+  "Down", the route, Port/Hop chips) and 'Selected for VPN'/'Use for VPN' with 'Edit port'; a "Final exits" card
+  has Export and one card per exit (priority badge, share/rename/delete icons, chips for "In use", protocol and
+  `mainUsage`, the host, Enabled / Allow direct (T1) checkboxes, raise/lower arrows). Exit edits go through
+  `editExit` (slot name + URL against the latest state). "Add final exits" takes several links or a base64
+  subscription. **Providers & nodes** mirrors desktop Subscriptions: provider rows with Active/Not used/Fetch failed
+  tags, counts, `ago`, Use this, export and remove (by URL); entry nodes grouped per provider (`nodeGroups`), folding
+  per URL (`collapsedSubs`, unused providers start folded), live search and Online only that hide rows in place,
+  `sortProbes` (same order as desktop), a pin banner, and node rows with tags, share and Pin. Export dialogs
+  (`showShare`) page through links with a QR code (`Exports.qr`, whole-pixel scaling), Copy link / Copy all links /
+  Copy as subscription. QR codes, exported links and parsed exits come from the Go binary's hidden `share` command,
+  so Android exports the same text as desktop. Status events redraw these two sections (`queueLiveRender`, at most
+  every 1.5 s, keeping scroll and search focus) except while the category list is open or the search text was
+  typed in the last 3 s: a rebuild resets the keyboard's composing text. `FlowLayout` wraps chips.
   `VpnSvc` publishes a live notification with the canonical resource-ID overload of `setSmallIcon`, using a dedicated
   white-on-transparent drawable. The application icon is a separate legacy mipmap plus an Android 8+ adaptive icon
   (including monochrome), so OEM notification rows that substitute the application icon do not depend on the small

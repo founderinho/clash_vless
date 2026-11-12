@@ -28,6 +28,7 @@ import (
 	appgui "clashvless/internal/gui"
 	"clashvless/internal/happ"
 	"clashvless/internal/loghub"
+	"clashvless/internal/share"
 	"clashvless/internal/store"
 	"clashvless/internal/tui"
 	"clashvless/internal/tun"
@@ -69,6 +70,10 @@ func run(args []string) error {
 		if home, err := os.UserHomeDir(); err == nil {
 			configPath = home + configPath[1:]
 		}
+	}
+
+	if len(args) > 0 && args[0] == "share" { // hidden: the Android app's export and link parser, JSON on stdin
+		return share.Serve(os.Stdin, os.Stdout)
 	}
 
 	st, err := store.Load(configPath)

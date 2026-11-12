@@ -20,6 +20,7 @@ import (
 
 	"clashvless/internal/engine"
 	"clashvless/internal/loghub"
+	"clashvless/internal/share"
 	"clashvless/internal/store"
 )
 
@@ -110,7 +111,7 @@ func TestRenameExitKeepsURL(t *testing.T) {
 	if main.Name != "Cloud exit" || main.URL != linkC {
 		t.Fatalf("renamed main = %+v", main)
 	}
-	if got := mainShareLink(main).URL; !strings.HasSuffix(got, "#Cloud%20exit") || !strings.HasPrefix(got, strings.TrimSuffix(linkC, "#C")) {
+	if got := share.MainLink(main).URL; !strings.HasSuffix(got, "#Cloud%20exit") || !strings.HasPrefix(got, strings.TrimSuffix(linkC, "#C")) {
 		t.Fatalf("share link = %s", got)
 	}
 }
@@ -127,18 +128,6 @@ func TestAddSeveralExitsAtOnce(t *testing.T) {
 	}
 	if !strings.Contains(d.notice.Text, "Added 2") || !strings.Contains(d.notice.Text, "1 already present") || !strings.Contains(d.notice.Text, "1 invalid") {
 		t.Fatalf("notice = %q", d.notice.Text)
-	}
-}
-
-func TestParseExitLinksAcceptsSubscriptionBlob(t *testing.T) {
-	blob := subscriptionBlob([]shareLink{{URL: linkA}, {URL: linkB}})
-	links, invalid := parseExitLinks(blob)
-	if invalid != 0 || len(links) != 2 || links[0] != linkA || links[1] != linkB {
-		t.Fatalf("links %v, invalid %d", links, invalid)
-	}
-	links, invalid = parseExitLinks(linkA + " " + linkC)
-	if invalid != 0 || len(links) != 2 {
-		t.Fatalf("two links on one line: %v, invalid %d", links, invalid)
 	}
 }
 
@@ -171,20 +160,6 @@ func TestExportDialogCopiesLinks(t *testing.T) {
 	tapRouteDialogButton(t, d, "Close")
 	if d.dialogOpen {
 		t.Fatal("dialog still open")
-	}
-}
-
-func TestExportNodesFromSubscription(t *testing.T) {
-	links, skipped := nodeShareLinks([]store.Node{
-		{Name: "raw", Raw: linkB},
-		{Name: "json", Outbound: []byte(`{"protocol":"vless","settings":{"vnext":[{"address":"j.example","port":443,"users":[{"id":"u","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"none","sockopt":{"mark":1}}}`)},
-		{Name: "trojan", Outbound: []byte(`{"protocol":"trojan"}`)},
-	})
-	if skipped != 1 || len(links) != 2 || links[0].URL != linkB {
-		t.Fatalf("links %+v, skipped %d", links, skipped)
-	}
-	if !strings.HasPrefix(links[1].URL, "vless://u@j.example:443?") || !strings.Contains(links[1].Note, "sockopt") {
-		t.Fatalf("converted link %+v", links[1])
 	}
 }
 

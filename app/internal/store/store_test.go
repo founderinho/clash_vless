@@ -212,3 +212,16 @@ func TestLoadAcceptsBOM(t *testing.T) {
 		t.Fatalf("Load = %v, %v", st, err)
 	}
 }
+
+func TestHasMainIgnoresName(t *testing.T) {
+	sl := Slot{Mains: []Main{{Name: "Renamed", URL: "vless://u@a.example:443?security=none#old"}}}
+	for link, want := range map[string]bool{
+		"vless://u@a.example:443?security=none#Renamed": true,
+		"vless://u@a.example:443?security=none":         true,
+		"vless://u@a.example:444?security=none#old":     false,
+	} {
+		if got := sl.HasMain(link); got != want {
+			t.Errorf("HasMain(%s) = %v", link, got)
+		}
+	}
+}
