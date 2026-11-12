@@ -69,6 +69,13 @@ func routesDashboard(t *testing.T) (*dashboard, <-chan control.Command) {
 	return d, commands
 }
 
+func routeHasText(root fyne.CanvasObject, value string) bool {
+	return len(findRouteObjects(root, func(obj fyne.CanvasObject) bool {
+		text, ok := obj.(*canvas.Text)
+		return ok && text.Text == value
+	})) > 0
+}
+
 func findRouteObjects(root fyne.CanvasObject, matches func(fyne.CanvasObject) bool) []fyne.CanvasObject {
 	var found []fyne.CanvasObject
 	seen := map[fyne.CanvasObject]bool{}
@@ -253,15 +260,8 @@ func TestSlotDisplaysSelectedForVPN(t *testing.T) {
 	d, commands := routesDashboard(t)
 	d.render()
 
-	labels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
-		l, ok := obj.(*widget.Label)
-		return ok && strings.Contains(l.Text, "VPN slot")
-	})
-	if len(labels) != 1 {
-		t.Fatalf("expected 1 label with 'VPN slot', got %d", len(labels))
-	}
-	if !strings.Contains(labels[0].(*widget.Label).Text, "Port 2084") {
-		t.Fatalf("expected 'first' slot (Port 2084) to be selected for VPN, got %q", labels[0].(*widget.Label).Text)
+	if !routeHasText(d.content, "Port 2084") {
+		t.Fatal("expected the open slot to show its port 2084")
 	}
 
 	selectedBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
@@ -301,12 +301,12 @@ func TestSlotDisplaysSelectedForVPN(t *testing.T) {
 		t.Fatalf("expected tun_slot to be 'second', got %q", d.state.TunSlotName())
 	}
 
-	labelsAfter := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
-		l, ok := obj.(*widget.Label)
-		return ok && strings.Contains(l.Text, "VPN slot")
+	selectedAfter := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && b.Text == "Selected for VPN"
 	})
-	if len(labelsAfter) != 1 || !strings.Contains(labelsAfter[0].(*widget.Label).Text, "Port 2086") {
-		t.Fatalf("expected 'second' slot (Port 2086) to display 'VPN slot', got %+v", labelsAfter)
+	if len(selectedAfter) != 1 || !routeHasText(d.content, "Port 2086") {
+		t.Fatalf("expected 'second' slot (Port 2086) to be selected for VPN, got %d buttons", len(selectedAfter))
 	}
 
 	d.navigate("overview")
@@ -397,18 +397,18 @@ func TestExitRoutesTabsBar(t *testing.T) {
 
 	// Verify only slot "first" panel is displayed
 	labels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
-		l, ok := obj.(*widget.Label)
-		return ok && strings.Contains(l.Text, "Port 2084")
+		text, ok := obj.(*canvas.Text)
+		return ok && text.Text == "Port 2084"
 	})
 	if len(labels) != 1 {
-		t.Fatalf("expected 1 label with 'Port 2084', got %d", len(labels))
+		t.Fatalf("expected 1 port chip with 'Port 2084', got %d", len(labels))
 	}
 	labelsSecond := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
-		l, ok := obj.(*widget.Label)
-		return ok && strings.Contains(l.Text, "Port 2086")
+		text, ok := obj.(*canvas.Text)
+		return ok && text.Text == "Port 2086"
 	})
 	if len(labelsSecond) != 0 {
-		t.Fatalf("expected 0 labels with 'Port 2086' while 'first' is selected, got %d", len(labelsSecond))
+		t.Fatalf("expected 0 port chips with 'Port 2086' while 'first' is selected, got %d", len(labelsSecond))
 	}
 
 	// 2. Switch tab to "second"
@@ -447,11 +447,11 @@ func TestExitRoutesTabsBar(t *testing.T) {
 
 	// Verify slot "second" panel is now displayed
 	labelsSecond = findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
-		l, ok := obj.(*widget.Label)
-		return ok && strings.Contains(l.Text, "Port 2086")
+		text, ok := obj.(*canvas.Text)
+		return ok && text.Text == "Port 2086"
 	})
 	if len(labelsSecond) != 1 {
-		t.Fatalf("expected 1 label with 'Port 2086' after selecting 'second', got %d", len(labelsSecond))
+		t.Fatalf("expected 1 port chip with 'Port 2086' after selecting 'second', got %d", len(labelsSecond))
 	}
 
 	tabRects = findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {

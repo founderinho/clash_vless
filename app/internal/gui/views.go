@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -391,18 +392,6 @@ func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fy
 			live = slotStatus
 		}
 	}
-	liveText := "Idle"
-	switch {
-	case !slot.Enabled:
-		liveText = "Off"
-	case live.HopOnly: // the main is down; the hop port serves the entry node named in Main
-		liveText = "First hop only · " + live.Main
-	case live.Tier > 0:
-		liveText = fmt.Sprintf("T%d · %s · %s", live.Tier, live.Main, milliseconds(live.Egress))
-	case live.Err != "":
-		liveText = "Down"
-	}
-
 	statusLabel := canvas.NewText("Disabled", colorMuted)
 	if slot.Enabled {
 		statusLabel = canvas.NewText("Enabled", colorText)
@@ -430,13 +419,9 @@ func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fy
 	titleRow := flexRow(titleLeft, d.iconButton(theme.DeleteIcon(), "Delete slot", func() { d.removeSlot(slotIndex) }))
 
 	isTun := tunSlot != "" && slot.Name == tunSlot
-	slotDetails := fmt.Sprintf("Port %d", slot.Port)
+	ports := []fyne.CanvasObject{neutralChip(fmt.Sprintf("Port %d", slot.Port))}
 	if hop := d.state.HopPort(slotIndex); hop > 0 {
-		slotDetails += fmt.Sprintf(" · first hop %d", hop)
-	}
-	slotDetails += " · " + liveText
-	if isTun {
-		slotDetails += " · VPN slot"
+		ports = append(ports, neutralChip(fmt.Sprintf("Hop %d", hop)))
 	}
 	var vpnBtn *widget.Button
 	if isTun {
@@ -457,16 +442,17 @@ func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fy
 	}
 	rows := []fyne.CanvasObject{
 		titleRow,
-		mutedLine(slotDetails),
+		flexRow(slotLiveLine(slot.Enabled, live), container.NewHBox(ports...)),
 		container.NewHBox(widget.NewButton("Edit port", func() { d.editSlotPort(slotIndex) }), vpnBtn, exportBtn),
-	}
-	if live.Err != "" && live.Tier == 0 && slot.Enabled {
-		rows = append(rows, wrappingMuted(live.Err))
+		widget.NewSeparator(),
 	}
 	if len(slot.Mains) == 0 {
-		rows = append(rows, widget.NewSeparator(), muted("No final exits in this slot."))
+		rows = append(rows, muted("No final exits in this slot yet."))
 	} else {
-		rows = append(rows, widget.NewSeparator(), wrappingMuted("Priority: exits are tried top to bottom. The first working one in the best tier carries traffic; use the arrows to reorder."))
+		heading := canvas.NewText("Final exits", colorText)
+		heading.TextSize = 12
+		heading.TextStyle = fyne.TextStyle{Bold: true}
+		rows = append(rows, container.NewHBox(heading, muted("in priority order: the top working one is used")))
 	}
 	for mainIndex, main := range slot.Mains {
 		rows = append(rows, widget.NewSeparator(), d.mainRow(slotIndex, mainIndex, len(slot.Mains), main, live))
@@ -475,19 +461,45 @@ func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fy
 	return panel("", "", rows...)
 }
 
-// mainUsage says which tiers can use an exit, in the cascade's own terms.
+// slotLiveLine is the slot's state in one line: a colored tag, then the route.
+func slotLiveLine(enabled bool, live engine.SlotStatus) fyne.CanvasObject {
+	tag, detail, detailColor := neutralChip("Checking"), "looking for a working exit…", colorMuted
+	switch {
+	case !enabled:
+		tag, detail = neutralChip("Off"), "this slot is not serving"
+	case live.HopOnly: // Main names the entry node the hop port serves
+		tag, detail, detailColor = tintChip("First hop only", colorWarning), live.Main+" · no final exit reachable", colorText
+	case live.Tier > 0:
+		label := fmt.Sprintf("T%d %s", live.Tier, tierName(live.Tier))
+		if live.Egress > 0 {
+			label += " · " + milliseconds(live.Egress)
+		}
+		tag, detail, detailColor = tintChip(label, colorAccent), live.Main, colorText
+		if live.Entry != "" {
+			detail = live.Entry + " → " + live.Main
+		}
+		if live.Note != "" {
+			detail += " · " + live.Note
+		}
+	case live.Err != "":
+		tag, detail, detailColor = tintChip("Down", colorDanger), live.Err, colorText
+	}
+	return container.NewBorder(nil, nil, inset(tag, 0, 0, 0, 6), nil, newFitText(detail, detailColor, 13, false))
+}
+
+// mainUsage says, in a couple of words, which tiers can use an exit.
 func mainUsage(main store.Main) (text string, usable bool) {
 	switch {
 	case !main.Enabled:
-		return "disabled", false
+		return "Disabled", false
 	case store.IsVision(main.URL) && !main.AllowNoHop:
-		return "never used: Vision exits only work direct, allow T1", false
+		return "Unused: Vision needs direct", false
 	case store.IsVision(main.URL):
-		return "direct only (T1)", true
+		return "Direct only", true
 	case main.AllowNoHop:
-		return "direct (T1) or via a hop (T2/T3)", true
+		return "Direct or hop", true
 	}
-	return "via a hop only (T2/T3)", true
+	return "Hop only", true
 }
 
 func (d *dashboard) mainRow(slotIndex, mainIndex, count int, main store.Main, live engine.SlotStatus) fyne.CanvasObject {
@@ -508,13 +520,29 @@ func (d *dashboard) mainRow(slotIndex, mainIndex, count int, main store.Main, li
 	number.TextStyle = fyne.TextStyle{Bold: true}
 	badge := container.NewCenter(container.NewGridWrap(fyne.NewSize(22, 22), container.NewStack(badgeBg, container.NewCenter(number))))
 
-	title := ellipsized(main.Name)
-	title.TextStyle = fyne.TextStyle{Bold: active}
-	meta := mainHost(main.URL) + " · " + store.ProtoTag(main.URL)
-	if active {
-		meta = fmt.Sprintf("In use · T%d · %s", live.Tier, milliseconds(live.Egress)) + " · " + meta
+	nameColor := colorText
+	if !main.Enabled {
+		nameColor = colorMuted
 	}
-	info := container.NewVBox(title, mutedLine(meta))
+	title := newFitText(main.Name, nameColor, 14, active)
+	var tags []fyne.CanvasObject
+	if active {
+		label := "In use · T" + strconv.Itoa(live.Tier)
+		if live.Egress > 0 {
+			label += " · " + milliseconds(live.Egress)
+		}
+		tags = append(tags, tintChip(label, colorAccent))
+	}
+	if proto := store.ProtoTag(main.URL); proto != "" {
+		tags = append(tags, neutralChip(strings.ReplaceAll(proto, "·", " · ")))
+	}
+	if !usable && main.Enabled {
+		tags = append(tags, tintChip(usage, colorDanger))
+	} else {
+		tags = append(tags, neutralChip(usage))
+	}
+	meta := container.NewBorder(nil, nil, container.NewHBox(tags...), nil, newFitText(mainHost(main.URL), colorMuted, 12, false))
+	info := container.New(layout.NewCustomPaddedVBoxLayout(4), title, meta)
 
 	up := d.iconButton(theme.MoveUpIcon(), "Raise priority", func() { d.moveMain(slotIndex, mainIndex, -1) })
 	up.Disabled = mainIndex == 0
@@ -532,16 +560,11 @@ func (d *dashboard) mainRow(slotIndex, mainIndex, count int, main store.Main, li
 		d.setMainFlag(slotIndex, mainIndex, func(m *store.Main) { m.Enabled = on })
 	})
 	exitEnabled.Checked = main.Enabled
-	direct := widget.NewCheck("Allow direct · T1", func(on bool) {
+	direct := widget.NewCheck("Allow direct (T1)", func(on bool) {
 		d.setMainFlag(slotIndex, mainIndex, func(m *store.Main) { m.AllowNoHop = on })
 	})
 	direct.Checked = main.AllowNoHop
-	usageText := canvas.NewText(usage, colorMuted)
-	if !usable && main.Enabled {
-		usageText.Color = colorDanger
-	}
-	usageText.TextSize = 11
-	toggles := container.NewHBox(exitEnabled, direct, container.NewCenter(usageText))
+	toggles := inset(container.NewHBox(exitEnabled, direct), 0, 0, 22, 0)
 
 	head := container.NewBorder(nil, nil, inset(badge, 0, 0, 0, 6), nil, info)
 	return container.NewVBox(flexRow(head, actions), toggles)

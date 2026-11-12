@@ -269,3 +269,23 @@ func scaled(src image.Image, factor int) image.Image {
 	}
 	return dst
 }
+
+func TestFitRunes(t *testing.T) {
+	measure := func(s string) float32 { return float32(len([]rune(s))) }
+	cases := []struct {
+		value string
+		width float32
+		want  string
+	}{
+		{"short", 10, "short"},
+		{"Швеция exit", 8, "Швеция…"},
+		{"ab · cdef", 6, "ab…"},
+		{"abc", 0, "…"},
+		{"", 3, ""},
+	}
+	for _, c := range cases {
+		if got := fitRunes(c.value, c.width, measure); got != c.want {
+			t.Errorf("fitRunes(%q, %v) = %q, want %q", c.value, c.width, got, c.want)
+		}
+	}
+}

@@ -39,9 +39,12 @@ or a **system-wide TUN** — with automatic tiered failover.
     right corner of the slot box triggering the slot delete confirmation.
     Icon actions are `dashboard.iconButton` (`tooltipIconButton` with a `Hint`); hints float in one
     `tooltipLayer` stacked over the window. It holds only canvas objects, which are never hit targets, so it
-    can't steal clicks or hover, and showing a hint doesn't shift the row. Each exit row shows its priority number,
-    an "In use" highlight with tier/latency, raise/lower arrows (reorder = priority), share (QR), rename, and delete, plus
-    a usage line from `mainUsage` (red when an enabled exit can never be used, e.g. Vision without T1).
+    can't steal clicks or hover, and showing a hint doesn't shift the row. Text under names is kept to one line of short tags (`labels.go`):
+    a slot shows `slotLiveLine` (a colored state tag such as "T1 Direct · 87 ms", "First hop only", "Down", then the
+    route or error) with Port/Hop chips on the right; an exit shows its name, then chips for "In use", protocol and
+    `mainUsage` ("Direct or hop", "Hop only", red "Unused: Vision needs direct"), then the host. Names and hosts
+    use `fitText`, which ellipsizes to the available width. Each exit row shows its priority number,
+    raise/lower arrows (reorder = priority), share (QR), rename, and delete.
     Exit edits go through `mainRef` (slot name + URL), so a confirmation or rename finishing after another client
     reordered the exits still hits the right one. "Add final exits" takes several links, one per line, or a base64
     subscription. **Export** (`share.go`) is Marzban-style: a QR per link (`rsc.io/qr`, drawn black-on-white with a
