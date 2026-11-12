@@ -29,7 +29,9 @@ final class Exports {
                 int start = out.indexOf('{');
                 if (code != 0 || start < 0) throw new Exception("exit " + code + " " + err.trim());
                 JSONObject response = new JSONObject(out.substring(start));
-                activity.runOnUiThread(() -> done.accept(response));
+                activity.runOnUiThread(() -> {
+                    if (!activity.isFinishing() && !activity.isDestroyed()) done.accept(response);
+                });
             } catch (Exception error) {
                 Core.log("Export failed: " + error);
                 activity.runOnUiThread(() -> android.widget.Toast.makeText(activity, "Export failed: " + error.getMessage(),

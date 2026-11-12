@@ -77,6 +77,8 @@ public class MainActivity extends Activity {
     private String nodeQuery = "", nodeSort = "Recommended";
     private boolean nodesOnline, liveRenderQueued, sectionsOpen;
     private long typedAt;
+    private boolean touching;
+    private volatile boolean logQueued;
     private final java.util.Map<String, Boolean> collapsedSubs = new java.util.HashMap<>();
     private int renderedView = -1;
 
@@ -164,9 +166,11 @@ public class MainActivity extends Activity {
     protected void onStart() {
         super.onStart();
         Core.uiVisible = true;
+        Ctl.wake();
         Ctl.listener = stateChanged -> runOnUiThread(() -> {
-            if (tab == STATUS || (stateChanged && tab == CONFIG)) render();
-            else if (tab == CONFIG && liveSection()) queueLiveRender();
+            if (stateChanged && tab == CONFIG) render();
+            else if (tab == STATUS && !touching) render();
+            else if (liveView()) queueLiveRender();
             else renderHead();
         });
         render();
@@ -177,13 +181,28 @@ public class MainActivity extends Activity {
         Core.uiVisible = false;
         Ctl.listener = null;
         Core.setListener(null);
-        if (!VpnSvc.running && !isChangingConfigurations()) new Thread(Core::stopDaemon).start();
+        if (!isChangingConfigurations()) new Thread(Core::stopIdle).start();
         super.onStop();
     }
 
-    /** Exit routes and Providers show live state, so status updates redraw them too. */
-    private boolean liveSection() {
-        return configSection == 2 || configSection == 3;
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration config) {
+        super.onConfigurationChanged(config);
+        render();
+    }
+
+    /** A rebuild between press and release drops the tap, so live redraws wait for the finger to lift. */
+    @Override
+    public boolean dispatchTouchEvent(android.view.MotionEvent event) {
+        int action = event.getActionMasked();
+        if (action == android.view.MotionEvent.ACTION_DOWN) touching = true;
+        else if (action == android.view.MotionEvent.ACTION_UP || action == android.view.MotionEvent.ACTION_CANCEL) touching = false;
+        return super.dispatchTouchEvent(event);
+    }
+
+    /** Overview, Exit routes and Providers show live state, so status updates redraw them too. */
+    private boolean liveView() {
+        return tab == STATUS || (tab == CONFIG && (configSection == 2 || configSection == 3));
     }
 
     private void queueLiveRender() {
@@ -192,9 +211,9 @@ public class MainActivity extends Activity {
         liveRenderQueued = true;
         body.postDelayed(() -> {
             liveRenderQueued = false;
-            if (tab != CONFIG || !liveSection()) return;
+            if (!liveView()) return;
             // Not under an open category list, or mid-typing: a rebuild resets the keyboard's composing text.
-            if (sectionsOpen || android.os.SystemClock.uptimeMillis() - typedAt < 3000) queueLiveRender();
+            if (sectionsOpen || touching || android.os.SystemClock.uptimeMillis() - typedAt < 3000) queueLiveRender();
             else render();
         }, 1500);
     }
@@ -233,8 +252,8 @@ public class MainActivity extends Activity {
 
     private void renderHead() {
         JSONObject s = Ctl.status;
-        boolean online = VpnSvc.running && s != null && s.optInt("Tier") > 0 && s.optBoolean("TunUp");
-        connectionLabel.setText(!VpnSvc.running ? "Disconnected" : online ? "Connected" : "Connecting");
+        boolean up = VpnSvc.running && s != null && s.optBoolean("TunUp"), online = up && s.optInt("Tier") > 0;
+        connectionLabel.setText(!VpnSvc.running ? "Disconnected" : online ? "Connected" : up ? "No route" : "Connecting");
         connectionLabel.setTextColor(online ? ACCENT : MUTED);
         switchUpdating = true;
         vpnSwitch.setChecked(VpnSvc.running);
@@ -252,47 +271,193 @@ public class MainActivity extends Activity {
     }
 
     private void renderStatus(JSONObject st, LinearLayout target) {
-        JSONObject s = Ctl.status;
-        boolean online = s != null && s.optInt("Tier") > 0;
-        boolean protectedNow = online && VpnSvc.running && s.optBoolean("TunUp");
-        LinearLayout hero = card(protectedNow ? "Connected" : online ? "Route ready" : "Not connected",
-                protectedNow ? "Your traffic is protected"
-                        : online ? "Turn on the VPN to protect this device"
-                        : "Waiting for a working exit");
-        hero.addView(text(s == null ? "" : line(s), 14, online ? ACCENT : MUTED, false));
-        hero.addView(spacer(10));
+        JSONObject s = Ctl.status == null ? new JSONObject() : Ctl.status;
+        JSONArray slots = st.optJSONArray("slots");
+        if (!anyMain(st) && slots != null && slots.length() > 0) target.addView(setupCard(st, slots.optJSONObject(0).optString("name")), spaced());
+        target.addView(connectionCard(st, s), spaced());
+        target.addView(endpointsCard(st, s), spaced());
+        target.addView(poolsCard(s), spaced());
+        target.addView(btn("Recheck every route", false, () -> Ctl.cmd("kick")));
+    }
+
+    private View setupCard(JSONObject st, String firstSlot) {
+        JSONArray subs = st.optJSONArray("subs");
+        boolean haveSubs = subs != null && subs.length() > 0;
+        LinearLayout setup = card("Finish setup", "Two steps before traffic can be routed");
+        setup.addView(setupStep(haveSubs, "Add a subscription", "Provides the entry nodes used as hops (T2/T3)",
+                btn("Add subscription", false, this::addSub)), topMargin(8));
+        setup.addView(setupStep(false, "Add a final VLESS exit", "The server your traffic finally leaves from",
+                btn("Add final exits", true, () -> addExits(firstSlot))), topMargin(10));
+        return setup;
+    }
+
+    private View setupStep(boolean done, String title, String hint, Button action) {
+        LinearLayout step = new LinearLayout(this);
+        step.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.addView(done ? tintChip("Done", ACCENT) : tintChip("To do", WARNING));
+        TextView name = text(title, 13, TEXT, true);
+        name.setPadding(dp(8), 0, 0, 0);
+        head.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+        step.addView(head);
+        step.addView(text(hint, 12, MUTED, false));
+        if (!done) step.addView(action, topMargin(4));
+        return step;
+    }
+
+    private View connectionCard(JSONObject st, JSONObject s) {
+        boolean vpn = VpnSvc.running, online = s.optInt("Tier") > 0, tunErr = !s.optString("TunErr").isEmpty();
+        String headline = "Disconnected", hint = "No exit works yet. Retrying automatically.";
+        boolean good = false;
+        if (vpn && tunErr) { headline = "Not protected"; hint = "The VPN could not start, so traffic goes out directly."; }
+        else if (vpn && !s.optBoolean("TunUp")) { headline = "Connecting"; hint = "Starting the VPN; traffic goes out directly until it is up."; }
+        else if (vpn && online) { headline = "Connected"; hint = "All traffic goes through the route below."; good = true; }
+        else if (vpn) { headline = "No route"; hint = "The VPN is up, but no exit works yet. Retrying automatically."; }
+        else if (online) { headline = "Proxy ready"; hint = "Apps set to a local SOCKS5 address are routed. Turn the VPN on to route everything."; good = true; }
+        else if (s.optBoolean("HopOnly")) hint = "No final exit works; only the first-hop port is served.";
+        LinearLayout card = card(text(headline, 17, good ? ACCENT : TEXT, true), null);
+        card.addView(text(hint, 12, MUTED, false));
+
+        String route = "No working route yet";
+        int routeColor = MUTED;
+        if (online) {
+            route = s.optString("Entry").isEmpty() ? "This device -> " + s.optString("Main") : "This device -> " + s.optString("Entry") + " -> " + s.optString("Main");
+            routeColor = TEXT;
+        } else if (s.optBoolean("HopOnly")) {
+            route = "This device -> " + s.optString("Main") + " (first hop only)";
+            routeColor = WARNING;
+        } else if (!s.optString("Err").isEmpty()) {
+            route = s.optString("Err");
+            routeColor = DANGER;
+        }
+        LinearLayout routeRow = new LinearLayout(this);
+        TextView label = text("ROUTE", 11, MUTED, true);
+        label.setPadding(0, dp(3), dp(8), 0);
+        routeRow.addView(label);
+        TextView routeText = text(route, 13, routeColor, true);
+        routeText.setMaxLines(2);
+        routeText.setEllipsize(TextUtils.TruncateAt.END);
+        routeRow.addView(routeText, new LinearLayout.LayoutParams(0, -2, 1));
+        card.addView(routeRow, topMargin(8));
+
+        int serving = 0, enabled = 0;
+        JSONArray slots = st.optJSONArray("slots"), live = s.optJSONArray("Slots");
+        for (int i = 0; slots != null && i < slots.length(); i++) if (slots.optJSONObject(i).optBoolean("enabled")) enabled++;
+        for (int i = 0; live != null && i < live.length(); i++) if (live.optJSONObject(i).optInt("Tier") > 0) serving++;
+        int tier = s.optInt("Tier");
         LinearLayout metrics = new LinearLayout(this);
         addMetric(metrics, "Latency", online ? s.optLong("Egress") / 1_000_000 + " ms" : "-");
-        addMetric(metrics, "Healthy nodes", okCount(s == null ? null : s.optJSONArray("Country")) + " / " + okCount(s == null ? null : s.optJSONArray("Bypass")));
-        addMetric(metrics, "Active tier", online ? "T" + s.optInt("Tier") : "-");
-        hero.addView(metrics);
-        target.addView(hero);
-        if (s != null && !s.optString("TunErr").isEmpty()) target.addView(card("VPN isn't running", "Your traffic is NOT going through the tunnel. Retrying automatically. " + s.optString("TunErr")));
+        addMetric(metrics, "Route type", online ? "T" + tier + " " + TIER_NAMES[Math.min(tier, 3)] : "-");
+        addMetric(metrics, "Slots serving", serving + " / " + enabled);
+        card.addView(metrics, topMargin(6));
+        if (!s.optString("Note").isEmpty()) card.addView(text(s.optString("Note"), 12, MUTED, false), topMargin(6));
+        if (tunErr) {
+            LinearLayout alert = toned(DANGER);
+            alert.addView(text("VPN isn't running: traffic is NOT going through the tunnel. Retrying automatically.", 13, TEXT, true));
+            alert.addView(text(s.optString("TunErr"), 12, MUTED, false));
+            card.addView(alert, topMargin(8));
+        }
+        return card;
+    }
 
-        LinearLayout endpoints = card("Local endpoints", VpnSvc.running ? "System-wide VPN is on" : "Native SOCKS5 listeners");
+    private View endpointsCard(JSONObject st, JSONObject s) {
+        LinearLayout card = card("Local endpoints", "SOCKS5 addresses for your applications");
         JSONArray slots = st.optJSONArray("slots");
+        String tun = tunSlot(st), host = connectHost(st);
+        int shown = 0, disabled = 0;
         for (int i = 0; slots != null && i < slots.length(); i++) {
             JSONObject sl = slots.optJSONObject(i);
-            if (!sl.optBoolean("enabled")) continue;
-            String address = "socks5://" + listenHost(st) + ":" + sl.optInt("port");
-            LinearLayout row = row(text(sl.optString("name") + "\n" + address, 13, TEXT, false),
-                    btn("Copy", false, () -> copy(address)));
-            endpoints.addView(row);
+            if (!sl.optBoolean("enabled")) { disabled++; continue; }
+            String name = sl.optString("name"), address = "socks5://" + host + ":" + sl.optInt("port");
+            int hop = hopPort(st, i);
+            LinearLayout box = innerBox();
+            LinearLayout head = new LinearLayout(this);
+            head.setGravity(Gravity.CENTER_VERTICAL);
+            TextView title = oneLine(name, 14, TEXT, true);
+            head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+            if (name.equals(tun)) head.addView(tintChip("VPN", ACCENT));
+            box.addView(head);
+            box.addView(text(address + (hop > 0 ? "  |  first hop :" + hop : ""), 12, MUTED, false));
+            Object[] state = liveState(true, liveSlot(s, name));
+            LinearLayout stateRow = new LinearLayout(this);
+            stateRow.setGravity(Gravity.CENTER_VERTICAL);
+            stateRow.addView((View) state[0]);
+            TextView detail = oneLine((String) state[1], 12, (int) state[2], false);
+            detail.setPadding(dp(8), 0, 0, 0);
+            stateRow.addView(detail, new LinearLayout.LayoutParams(0, -2, 1));
+            box.addView(stateRow, topMargin(4));
+            List<View> buttons = new ArrayList<>();
+            buttons.add(btn("Copy", false, () -> copy(address)));
+            if (hop > 0) buttons.add(btn("Copy hop", false, () -> copy("socks5://" + host + ":" + hop)));
+            box.addView(equalRow(buttons.toArray(new View[0])), topMargin(6));
+            if (shown++ > 0) box.setLayoutParams(topMargin(8));
+            card.addView(box);
         }
-        target.addView(endpoints);
-        if (s != null) {
-            LinearLayout pools = card("Entry pools", "Live health and tier selection");
-            pools.addView(text("Country | T2     " + okCount(s.optJSONArray("Country")) + " online", 14, TEXT, false));
-            pools.addView(text("Bypass | T3       " + okCount(s.optJSONArray("Bypass")) + " online", 14, TEXT, false));
-            if (!s.optString("Note").isEmpty()) pools.addView(text(s.optString("Note"), 12, MUTED, false));
-            target.addView(pools);
+        if (shown == 0) card.addView(text("No enabled slots. Enable one in Settings > Exit routes.", 12, MUTED, false), topMargin(6));
+        if (disabled > 0) card.addView(text(disabled + " disabled slot(s) not shown", 12, MUTED, false), topMargin(6));
+        return card;
+    }
+
+    private View poolsCard(JSONObject s) {
+        LinearLayout card = card("Entry pools", "Hop nodes from your subscriptions");
+        Set<String> inUse = entriesInUse(s);
+        JSONArray[] pools = pools(s);
+        card.addView(poolBox("Country exits", 2, pools[0], inUse));
+        card.addView(poolBox("Bypass nodes", 3, pools[1], inUse));
+        JSONObject sweep = s.optJSONObject("Sweep");
+        if (sweep != null && !sweep.optString("Node").isEmpty()) {
+            card.addView(text("Speed test " + (sweep.optInt("Done") + 1) + " / " + sweep.optInt("Total") + " | testing " + sweep.optString("Node"), 12, MUTED, false), topMargin(6));
         }
-        if (!anyMain(st)) {
-            LinearLayout setup = card("Finish your setup", "Subscriptions provide hops. Add a final VLESS exit to carry your traffic.");
-            setup.addView(btn("Add final exits", true, () -> addExits(st.optJSONArray("slots").optJSONObject(0).optString("name"))));
-            target.addView(setup);
+        return card;
+    }
+
+    private View poolBox(String name, int tier, JSONArray probes, Set<String> inUse) {
+        int up = 0, measured = 0;
+        double flaky = 0;
+        JSONObject fastest = null;
+        String using = "";
+        for (int i = 0; i < probes.length(); i++) {
+            JSONObject probe = probes.optJSONObject(i);
+            if (probe.optBoolean("OK")) {
+                up++;
+                if (fastest == null || probe.optLong("Latency") < fastest.optLong("Latency")) fastest = probe;
+            }
+            if (probe.optInt("Samples") > 0) { measured++; flaky += probe.optDouble("Flakiness"); }
+            if (using.isEmpty() && inUse.contains(probe.optString("Name"))) using = probe.optString("Name");
         }
-        target.addView(btn("Recheck every route", false, () -> Ctl.cmd("kick")));
+        LinearLayout box = innerBox();
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.addView(text(name, 13, TEXT, true));
+        TextView tierChip = neutralChip("T" + tier);
+        LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(-2, -2);
+        chipParams.setMargins(dp(8), 0, 0, 0);
+        head.addView(tierChip, chipParams);
+        head.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
+        head.addView(text(up + " / " + probes.length() + " online", 13, TEXT, true));
+        box.addView(head);
+        if (probes.length() == 0) {
+            box.addView(text("No nodes in your subscriptions", 12, MUTED, false));
+            return box;
+        }
+        float ratio = (float) up / probes.length();
+        box.addView(meter(ratio, up == 0 ? DANGER : ratio < 0.5f ? WARNING : ACCENT), topMargin(6));
+        box.addView(text(measured > 0 ? String.format(java.util.Locale.US, "Avg failure rate %.0f%% | last hour", flaky / measured) : "Stability: measuring...", 12, MUTED, false), topMargin(4));
+        if (fastest != null) box.addView(oneLine("Fastest: " + fastest.optString("Name") + " | " + fastest.optLong("Latency") / 1_000_000 + " ms", 12, MUTED, false));
+        if (!using.isEmpty()) box.addView(oneLine("In use: " + using, 12, ACCENT, true));
+        return box;
+    }
+
+    /** A thin bar filled to ratio. */
+    private View meter(float ratio, int color) {
+        LinearLayout track = new LinearLayout(this);
+        track.setBackground(round(CONTROL, 3));
+        View fill = new View(this);
+        fill.setBackground(round(color, 3));
+        track.addView(fill, new LinearLayout.LayoutParams(0, dp(6), Math.max(0, Math.min(1, ratio))));
+        track.addView(new View(this), new LinearLayout.LayoutParams(0, dp(6), 1 - Math.max(0, Math.min(1, ratio))));
+        return track;
     }
 
     private void renderSubs(JSONObject st) {
@@ -305,6 +470,7 @@ public class MainActivity extends Activity {
             if (Ctl.cmd("refetch")) fetching("refetching all subscriptions");
         });
         refresh.setEnabled(count > 0);
+        if (count == 0) refresh.setAlpha(0.4f);
         providers.addView(spacer(8));
         providers.addView(equalRow(btn("Add subscription", true, this::addSub), refresh));
         if (count > 1) providers.addView(toggle("Use nodes from all providers", combined, on -> Ctl.patch("auto_select", on)));
@@ -375,6 +541,8 @@ public class MainActivity extends Activity {
         boolean probed;
         final List<List<JSONObject>> pools = Arrays.asList(new ArrayList<>(), new ArrayList<>());
         final List<List<JSONObject>> unchecked = Arrays.asList(new ArrayList<>(), new ArrayList<>());
+        // Probe or placeholder -> this provider's node: names can repeat across providers.
+        final java.util.Map<JSONObject, JSONObject> nodes = new java.util.IdentityHashMap<>();
     }
 
     private static final class NodeEntry {
@@ -413,10 +581,13 @@ public class MainActivity extends Activity {
                 JSONObject probe = probes.get(key);
                 if (probe != null && group.probed) {
                     group.pools.get(pool).add(probe);
+                    group.nodes.put(probe, node);
                     used.add(key);
                 } else {
                     try {
-                        group.unchecked.get(pool).add(new JSONObject().put("Name", node.optString("name")).put("Server", node.optString("server")));
+                        JSONObject placeholder = new JSONObject().put("Name", node.optString("name")).put("Server", node.optString("server"));
+                        group.unchecked.get(pool).add(placeholder);
+                        group.nodes.put(placeholder, node);
                     } catch (Exception ignored) { }
                 }
             }
@@ -503,13 +674,13 @@ public class MainActivity extends Activity {
                 for (JSONObject probe : probes) {
                     total++;
                     if (probe.optBoolean("OK")) up++;
-                    View row = nodeRow(st, probe, inUse.contains(probe.optString("Name")), sweeping, "");
+                    View row = nodeRow(st, probe, group.nodes.get(probe), inUse.contains(probe.optString("Name")), sweeping, "");
                     entries.add(new NodeEntry(row, (probe.optString("Name") + " " + probe.optString("Server")).toLowerCase(java.util.Locale.ROOT), probe.optBoolean("OK")));
                     groupBody.addView(row);
                 }
                 for (JSONObject probe : unchecked) {
                     total++;
-                    View row = nodeRow(st, probe, false, sweeping, group.probed ? "Not checked yet" : "Provider not in use");
+                    View row = nodeRow(st, probe, group.nodes.get(probe), false, sweeping, group.probed ? "Not checked yet" : "Provider not in use");
                     entries.add(new NodeEntry(row, (probe.optString("Name") + " " + probe.optString("Server")).toLowerCase(java.util.Locale.ROOT), false));
                     groupBody.addView(row);
                 }
@@ -590,7 +761,7 @@ public class MainActivity extends Activity {
     }
 
     /** A checked node, or with a note an unchecked one (no stats, no pin). */
-    private View nodeRow(JSONObject st, JSONObject probe, boolean inUse, String sweeping, String note) {
+    private View nodeRow(JSONObject st, JSONObject probe, JSONObject source, boolean inUse, String sweeping, String note) {
         String name = probe.optString("Name");
         boolean ok = probe.optBoolean("OK"), pinned = name.equals(st.optString("pin_entry"));
         LinearLayout entry = new LinearLayout(this);
@@ -635,7 +806,7 @@ public class MainActivity extends Activity {
         row.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
 
         row.addView(icon(R.drawable.clashvless_qr, "Share as VLESS link", true, () -> {
-            JSONObject node = findNode(name);
+            JSONObject node = source != null ? source : findNode(name);
             if (node == null) { toast("This node is no longer in your subscriptions"); return; }
             try { Exports.call(this, new JSONObject().put("nodes", new JSONArray().put(node)), response -> showShare("Share entry node", response)); } catch (Exception e) { failed(e); }
         }));
@@ -715,9 +886,10 @@ public class MainActivity extends Activity {
     }
 
     private void renderMain(JSONObject st) {
-        body.addView(btn("Add failover slot", true, () -> addSlot(st)));
+        body.addView(btn("Add failover slot", true, this::addSlot), spaced());
         JSONArray slots = st.optJSONArray("slots");
-        String tunSlot = tunSlot(st);
+        String vpnSlot = tunSlot(st);
+        String tunSlot = vpnSlot.isEmpty() && slots != null && slots.length() > 0 ? slots.optJSONObject(0).optString("name") : vpnSlot;
         JSONObject s = Ctl.status;
 
         if (slots == null || slots.length() == 0) {
@@ -811,8 +983,8 @@ public class MainActivity extends Activity {
 
             LinearLayout tabTexts = new LinearLayout(this);
             tabTexts.setOrientation(LinearLayout.VERTICAL);
-            tabTexts.addView(text(name, 14, isSelected ? ACCENT : TEXT, true));
-            String portDesc = "socks5://" + listenHost(st) + ":" + sl.optInt("port");
+            tabTexts.addView(oneLine(name, 14, isSelected ? ACCENT : TEXT, true));
+            String portDesc = "socks5://" + connectHost(st) + ":" + sl.optInt("port");
             tabTexts.addView(text(portDesc, 11, MUTED, false));
             tabItem.addView(tabTexts, new LinearLayout.LayoutParams(0, -2, 1));
 
@@ -847,6 +1019,8 @@ public class MainActivity extends Activity {
             TextView nameView = text(name, 15, TEXT, true);
             nameView.setSingleLine(true);
             nameView.setEllipsize(TextUtils.TruncateAt.END);
+            // Leaves room for rename, the enable switch and delete at 360dp.
+            nameView.setMaxWidth(Math.max(dp(60), getResources().getDisplayMetrics().widthPixels - dp(28 + 24 + 196)));
             titleRow.addView(nameView);
 
             ImageView renameIcon = new ImageView(this);
@@ -863,7 +1037,7 @@ public class MainActivity extends Activity {
                 renameIcon.setTooltipText("Rename slot");
             }
             renameIcon.setContentDescription("Rename slot");
-            renameIcon.setOnClickListener(v -> renameSlot(st, si));
+            renameIcon.setOnClickListener(v -> renameSlot(name));
             titleRow.addView(renameIcon);
 
             TextView sep = text("|", 13, MUTED, false);
@@ -884,7 +1058,9 @@ public class MainActivity extends Activity {
             enableSwitch.setOnCheckedChangeListener((view, on) -> {
                 statusText.setText(on ? "Enabled" : "Disabled");
                 statusText.setTextColor(on ? TEXT : MUTED);
-                editSlot(st, si, sl, "enabled", on);
+                selectedSlotName = name; // the VPN slot can change; stay on this one
+                slotsMenuExpanded = true;
+                editSlotNamed(name, (now, list, index, patch) -> { list.optJSONObject(index).put("enabled", on); return true; });
             });
             titleRow.addView(enableSwitch);
 
@@ -904,7 +1080,7 @@ public class MainActivity extends Activity {
                 deleteIcon.setTooltipText("Delete slot");
             }
             deleteIcon.setContentDescription("Delete slot");
-            deleteIcon.setOnClickListener(v -> removeSlot(st, si));
+            deleteIcon.setOnClickListener(v -> removeSlot(name));
             titleRow.addView(deleteIcon);
 
             LinearLayout slot = card(titleRow, null);
@@ -912,8 +1088,11 @@ public class MainActivity extends Activity {
             slot.addView(slotStatus(sl.optBoolean("enabled"), live, sl.optInt("port"), hopPort(st, si)), topMargin(10));
             Button vpnBtn = btn(name.equals(tunSlot) ? "Selected for VPN" : "Use for VPN", false,
                     name.equals(tunSlot) ? () -> {} : () -> Ctl.patch("tun_slot", name));
-            if (name.equals(tunSlot)) vpnBtn.setEnabled(false);
-            slot.addView(equalRow(vpnBtn, btn("Edit port", false, () -> editPort(st, si))), topMargin(8));
+            if (name.equals(tunSlot)) {
+                vpnBtn.setEnabled(false);
+                vpnBtn.setTextColor(ACCENT);
+            }
+            slot.addView(equalRow(vpnBtn, btn("Edit port", false, () -> editPort(name))), topMargin(8));
             body.addView(slot, spaced());
             body.addView(exitsCard(sl, live), spaced());
         }
@@ -931,43 +1110,40 @@ public class MainActivity extends Activity {
 
     /** The first-hop port: the first slot honors entry_port, every other slot uses port + 1. */
     private static int hopPort(JSONObject st, int index) {
-        int port = st.optJSONArray("slots").optJSONObject(index).optInt("port"), entry = st.optInt("entry_port");
+        return hopPort(st.optJSONArray("slots"), st.optInt("entry_port"), index);
+    }
+
+    private static int hopPort(JSONArray slots, int entry, int index) {
+        int port = slots.optJSONObject(index).optInt("port");
         if (index == 0 && entry > 0) return entry != port ? entry : 0;
         return port > 0 ? port + 1 : 0;
     }
 
-    /** The slot's state in a box tinted by it: a tag such as "T1 Direct | 87 ms", the route or error, then its ports. */
-    private View slotStatus(boolean enabled, JSONObject live, int port, int hop) {
-        View tag = neutralChip("Checking");
-        String detail = "looking for a working exit...";
-        int detailColor = MUTED, tone = MUTED;
+    private static final String[] TIER_NAMES = {"", "Direct", "Country hop", "Bypass hop"};
+
+    /** A slot's live state: {tag view, detail, detail color, tone}, e.g. "T1 Direct | 87 ms" and its route. */
+    private Object[] liveState(boolean enabled, JSONObject live) {
         int tier = live.optInt("Tier");
-        if (!enabled) {
-            tag = neutralChip("Off");
-            detail = "this slot is not serving";
-        } else if (live.optBoolean("HopOnly")) {
-            tag = tintChip("First hop only", WARNING);
-            detail = live.optString("Main") + " | no final exit reachable";
-            detailColor = TEXT;
-            tone = WARNING;
-        } else if (tier > 0) {
-            String label = "T" + tier + " " + new String[]{"", "Direct", "Country hop", "Bypass hop"}[Math.min(tier, 3)];
+        if (!enabled) return new Object[]{neutralChip("Off"), "this slot is not serving", MUTED, MUTED};
+        if (live.optBoolean("HopOnly")) return new Object[]{tintChip("First hop only", WARNING), live.optString("Main") + " | no final exit reachable", TEXT, WARNING};
+        if (tier > 0) {
+            String label = "T" + tier + " " + TIER_NAMES[Math.min(tier, 3)];
             long ms = live.optLong("Egress") / 1_000_000;
             if (ms > 0) label += " | " + ms + " ms";
-            tag = tintChip(label, ACCENT);
-            detail = live.optString("Entry").isEmpty() ? live.optString("Main") : live.optString("Entry") + " -> " + live.optString("Main");
+            String detail = live.optString("Entry").isEmpty() ? live.optString("Main") : live.optString("Entry") + " -> " + live.optString("Main");
             if (!live.optString("Note").isEmpty()) detail += " | " + live.optString("Note");
-            detailColor = TEXT;
-            tone = ACCENT;
-        } else if (!live.optString("Err").isEmpty()) {
-            tag = tintChip("Down", DANGER);
-            detail = live.optString("Err");
-            detailColor = TEXT;
-            tone = DANGER;
+            return new Object[]{tintChip(label, ACCENT), detail, TEXT, ACCENT};
         }
-        LinearLayout box = toned(tone);
-        box.addView(flow(tag));
-        TextView route = text(detail, 13, detailColor, false);
+        if (!live.optString("Err").isEmpty()) return new Object[]{tintChip("Down", DANGER), live.optString("Err"), TEXT, DANGER};
+        return new Object[]{neutralChip("Checking"), "looking for a working exit...", MUTED, MUTED};
+    }
+
+    /** The slot's state in a box tinted by it: the state tag, the route or error, then its ports. */
+    private View slotStatus(boolean enabled, JSONObject live, int port, int hop) {
+        Object[] state = liveState(enabled, live);
+        LinearLayout box = toned((int) state[3]);
+        box.addView(flow((View) state[0]));
+        TextView route = text((String) state[1], 13, (int) state[2], false);
         route.setMaxLines(2);
         route.setEllipsize(TextUtils.TruncateAt.END);
         box.addView(route, topMargin(4));
@@ -1003,6 +1179,7 @@ public class MainActivity extends Activity {
             try { Exports.call(this, new JSONObject().put("mains", mains), response -> showShare("Export | " + slotName, response)); } catch (Exception e) { failed(e); }
         });
         export.setEnabled(count > 0);
+        if (count == 0) export.setAlpha(0.4f);
         head.addView(export);
         card.addView(head);
         if (count == 0) card.addView(text("No final exits in this slot yet.", 12, MUTED, false), topMargin(8));
@@ -1418,17 +1595,51 @@ public class MainActivity extends Activity {
         LinearLayout logs = card("Activity", "Live engine and xray events | newest at the bottom");
         logs.addView(btn("Clear view", false, () -> { Core.clearLog(); refreshLog(); }));
         logView = text("", 12, MUTED, false);
-        logView.setTypeface(Typeface.MONOSPACE);
+        logView.setLineSpacing(dp(3), 1f);
         logView.setTextIsSelectable(true);
         logs.addView(logView);
         body.addView(logs);
-        Core.setListener(line -> runOnUiThread(this::refreshLog));
+        Core.setListener(line -> {
+            if (logQueued) return;
+            logQueued = true;
+            body.postDelayed(() -> { logQueued = false; refreshLog(); }, 250);
+        });
         refreshLog();
-        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+        scroll.post(() -> scroll.scrollTo(0, body.getHeight()));
     }
 
+    /** Keeps following new lines only while the view is already at the bottom. */
     private void refreshLog() {
-        if (tab == LOG && logView != null) logView.setText(Core.filteredLog(logLevels, logModule, logQuery));
+        if (tab != LOG || logView == null) return;
+        boolean atEnd = scroll.getScrollY() + scroll.getHeight() >= body.getHeight() - dp(48);
+        logView.setText(styledLog(Core.filteredLog(logLevels, logModule, logQuery)));
+        if (atEnd) scroll.post(() -> scroll.scrollTo(0, body.getHeight()));
+    }
+
+    /** Muted time, a colored level and the origin, then the message, like the desktop's columns. */
+    private CharSequence styledLog(List<Core.Entry> entries) {
+        android.text.SpannableStringBuilder out = new android.text.SpannableStringBuilder();
+        for (Core.Entry entry : entries) {
+            if (out.length() > 0) out.append('\n');
+            if (!entry.structured) {
+                span(out, entry.line, entry.line.startsWith("[") ? TEXT : MUTED, false);
+                continue;
+            }
+            String[] parts = entry.line.split(" +", 4);
+            int levelColor = "ERROR".equals(entry.level) ? DANGER : "WARN".equals(entry.level) ? WARNING : "DEBUG".equals(entry.level) ? MUTED : BLUE;
+            span(out, parts[0].substring(0, 8) + " ", MUTED, false);
+            span(out, entry.level + " ", levelColor, true);
+            span(out, parts[2] + "  ", MUTED, false);
+            span(out, parts[3], "ERROR".equals(entry.level) ? DANGER : "WARN".equals(entry.level) ? WARNING : TEXT, false);
+        }
+        return out;
+    }
+
+    private static void span(android.text.SpannableStringBuilder out, String text, int color, boolean bold) {
+        int start = out.length();
+        out.append(text);
+        out.setSpan(new android.text.style.ForegroundColorSpan(color), start, out.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        if (bold) out.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), start, out.length(), android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
     }
 
     private void chooseLogLevels() {
@@ -1436,7 +1647,7 @@ public class MainActivity extends Activity {
         String[] values = {"INFO", "WARN", "ERROR", "DEBUG"};
         boolean[] checked = new boolean[values.length];
         for (int i = 0; i < values.length; i++) checked[i] = logLevels.contains(values[i]);
-        new AlertDialog.Builder(this).setTitle("Visible log levels")
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert).setTitle("Visible log levels")
                 .setMultiChoiceItems(names, checked, (dialog, which, on) -> checked[which] = on)
                 .setPositiveButton("Apply", (dialog, which) -> {
                     logLevels.clear();
@@ -1450,10 +1661,10 @@ public class MainActivity extends Activity {
         modules.add("All modules");
         modules.addAll(Core.modules());
         String[] items = modules.toArray(new String[0]);
-        new AlertDialog.Builder(this).setTitle("Log module").setItems(items, (dialog, which) -> {
+        choose("Log module", items, which -> {
             logModule = which == 0 ? "" : items[which];
             render();
-        }).show();
+        });
     }
 
     private void renderConfig(JSONObject st) {
@@ -1537,21 +1748,30 @@ public class MainActivity extends Activity {
             boolRow(failover, st, "Force a hop | skip T1", "force_hop", false);
             body.addView(failover);
 
-            LinearLayout network = card("Local listeners", "Restart the daemon to apply these changes");
-            intRow(network, st, "Listen port", "listen_port", 2084, 1024, 65534);
-            intRow(network, st, "First-hop port | 0 = auto", "entry_port", 0, 0, 65535);
+            LinearLayout network = card("Local listeners", "Slot ports are set per slot in Exit routes");
+            intRow(network, st, "First-hop port of the first slot | 0 = port + 1", "entry_port", 0, 0, 65535, port -> {
+                if (port > 0 && port < 1024) return "Port must be 0 or between 1024 and 65535";
+                JSONArray slots = copy(st.optJSONArray("slots"));
+                if (port > 0 && slots.length() > 0 && slots.optJSONObject(0).optInt("port") == port) return "Port " + port + " is the first slot's own port";
+                return portClash(slots, port);
+            });
             boolean lan = !"127.0.0.1".equals(st.optString("listen_addr"));
-            actionRow(network, "Allow LAN connections", lan ? "0.0.0.0" : "127.0.0.1", () -> Ctl.patch("listen_addr", lan ? "127.0.0.1" : "0.0.0.0"));
+            network.addView(toggle("Allow LAN connections", lan, on -> {
+                Ctl.patch("listen_addr", on ? "0.0.0.0" : "127.0.0.1");
+                restartEngine();
+            }));
+            network.addView(text(lan ? "Other devices on this network can use the SOCKS5 ports" : "Only apps on this phone can use the SOCKS5 ports", 12, MUTED, false));
             String[] levels = {"none", "error", "warning", "info", "debug"};
             String level = st.optString("log_level").isEmpty() ? "warning" : st.optString("log_level");
             chooseRow(network, "Xray log level", level, "Xray log level", levels, which -> Ctl.patch("log_level", levels[which]));
             body.addView(network);
         } else if (configSection == 1) {
             LinearLayout tun = card("System-wide VPN", "Static routed DNS | applied when the VPN reconnects");
-            textRow(tun, st, "Static DNS resolver", "tun_static_dns", "8.8.8.8");
+            textRow(tun, st, "Static DNS resolver", "tun_static_dns", "8.8.8.8", value -> ipAddress(value) ? null : "Enter an IP address, like 8.8.8.8");
             boolRow(tun, st, "Answer ping locally", "tun_no_icmp", true);
-            textRow(tun, st, "TUN interface address", "tun_addr", "198.18.0.1/30");
-            intRow(tun, st, "TUN MTU | 0 = default", "tun_mtu", 0, 0, 9000);
+            textRow(tun, st, "TUN interface address", "tun_addr", "198.18.0.1/30",
+                    value -> value.matches(IPV4 + "/([8-9]|[12]\\d|30)") ? null : "Enter an IPv4 network, like 198.18.0.1/30");
+            intRow(tun, st, "TUN MTU | 0 = default", "tun_mtu", 0, 0, 9000, mtu -> mtu == 0 || mtu >= 576 ? null : "MTU must be 0 or between 576 and 9000");
             body.addView(tun);
         } else if (configSection == 2) {
             renderMain(st);
@@ -1642,7 +1862,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
-        if (request != 1 || result != RESULT_OK) return;
+        if (request != 1) return;
+        if (result != RESULT_OK) { renderHead(); return; }
         Intent intent = new Intent(this, VpnSvc.class).setAction(VpnSvc.ACTION_START);
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent);
         else startService(intent);
@@ -1655,15 +1876,17 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void addSlot(JSONObject st) {
-        ask("New slot name", "slot" + (st.optJSONArray("slots").length() + 1), InputType.TYPE_CLASS_TEXT, name -> {
-            name = name.trim();
-            if (name.isEmpty()) { toast("Enter a valid slot name"); return; }
-            if (name.contains("://")) { toast("Slot name cannot contain ://"); return; }
+    private void addSlot() {
+        JSONObject st = Ctl.state;
+        if (st == null) return;
+        ask("New slot name", "slot" + (copy(st.optJSONArray("slots")).length() + 1), InputType.TYPE_CLASS_TEXT, value -> {
+            String name = value.trim();
+            if (!validSlotName(name)) return;
+            JSONObject now = Ctl.state;
             try {
-                JSONArray slots = copy(st.optJSONArray("slots"));
+                JSONArray slots = copy(now.optJSONArray("slots"));
                 for (int i = 0; i < slots.length(); i++) if (name.equals(slots.optJSONObject(i).optString("name"))) { toast("Slot name already exists"); return; }
-                slots.put(new JSONObject().put("name", name).put("port", freePort(st)).put("enabled", true).put("mains", new JSONArray()));
+                slots.put(new JSONObject().put("name", name).put("port", freePort(now)).put("enabled", true).put("mains", new JSONArray()));
                 slotsMenuExpanded = true;
                 selectedSlotName = name;
                 Ctl.patch("slots", slots);
@@ -1671,77 +1894,97 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void renameSlot(JSONObject st, int si) {
-        JSONArray slots = copy(st.optJSONArray("slots"));
-        JSONObject sl = slots.optJSONObject(si);
-        String oldName = sl.optString("name");
-        ask("Rename slot", oldName, InputType.TYPE_CLASS_TEXT, name -> {
-            name = name.trim();
-            if (name.isEmpty()) { toast("Enter a valid slot name"); return; }
-            if (name.contains("://")) { toast("Slot name cannot contain ://"); return; }
-            if (name.equals(oldName)) return;
-            for (int i = 0; i < slots.length(); i++) {
-                if (i != si && name.equals(slots.optJSONObject(i).optString("name"))) {
-                    toast("Slot name already exists");
-                    return;
-                }
-            }
-            try {
-                sl.put("name", name);
-                JSONObject patch = new JSONObject().put("slots", slots);
-                if (oldName.equals(st.optString("tun_slot"))) {
-                    patch.put("tun_slot", name);
-                }
-                if (oldName.equals(selectedSlotName)) {
-                    selectedSlotName = name;
-                }
-                Ctl.patch(patch);
-            } catch (Exception e) { failed(e); }
-        });
+    private boolean validSlotName(String name) {
+        if (name.isEmpty()) { toast("Enter a valid slot name"); return false; }
+        if (name.contains("://")) { toast("Slot name cannot contain ://"); return false; }
+        return true;
     }
 
-    private void editPort(JSONObject st, int si) {
-        JSONArray slots = copy(st.optJSONArray("slots"));
-        JSONObject sl = slots.optJSONObject(si);
-        ask("Slot SOCKS5 port", "" + sl.optInt("port"), InputType.TYPE_CLASS_NUMBER, value -> {
-            try {
-                int port = Integer.parseInt(value);
-                if (port < 1024 || port > 65534) throw new NumberFormatException();
-                for (int i = 0; i < slots.length(); i++) {
-                    int other = slots.optJSONObject(i).optInt("port");
-                    if (i != si && (other == port || other == port + 1 || other + 1 == port)) { toast("Port is already used"); return; }
-                }
-                sl.put("port", port);
-                Ctl.patch("slots", slots);
-            } catch (NumberFormatException e) { toast("Port must be between 1024 and 65534"); }
-            catch (Exception e) { failed(e); }
-        });
-    }
+    private interface SlotChange { boolean apply(JSONObject st, JSONArray slots, int index, JSONObject patch) throws Exception; }
 
-    private void removeSlot(JSONObject st, int si) {
-        JSONArray slots = copy(st.optJSONArray("slots"));
-        if (slots.length() <= 1) { toast("The last slot cannot be removed"); return; }
-        String name = slots.optJSONObject(si).optString("name");
-        confirm("Delete " + name + "?", () -> {
-            try {
-                slots.remove(si);
-                if (name.equals(selectedSlotName)) {
-                    selectedSlotName = tunSlot(st);
-                }
-                Ctl.patch("slots", slots);
-            } catch (Exception e) { failed(e); }
-        });
-    }
-
-    private void editSlot(JSONObject st, int si, JSONObject original, String key, Object value) {
+    /** Edits a slot by name on the latest state, so an edit made elsewhere meanwhile isn't reverted. */
+    private void editSlotNamed(String name, SlotChange change) {
+        JSONObject st = Ctl.state;
+        if (st == null) return;
         try {
             JSONArray slots = copy(st.optJSONArray("slots"));
-            slots.optJSONObject(si).put(key, value);
-            Ctl.patch("slots", slots);
+            for (int i = 0; i < slots.length(); i++) {
+                if (!name.equals(slots.optJSONObject(i).optString("name"))) continue;
+                JSONObject patch = new JSONObject();
+                if (change.apply(st, slots, i, patch)) Ctl.patch(patch.put("slots", slots));
+                return;
+            }
+            toast("This slot was changed elsewhere");
         } catch (Exception e) { failed(e); }
     }
 
+    private void renameSlot(String oldName) {
+        ask("Rename slot", oldName, InputType.TYPE_CLASS_TEXT, value -> {
+            String name = value.trim();
+            if (!validSlotName(name) || name.equals(oldName)) return;
+            editSlotNamed(oldName, (st, slots, si, patch) -> {
+                for (int i = 0; i < slots.length(); i++) {
+                    if (i != si && name.equals(slots.optJSONObject(i).optString("name"))) { toast("Slot name already exists"); return false; }
+                }
+                slots.optJSONObject(si).put("name", name);
+                if (oldName.equals(st.optString("tun_slot"))) patch.put("tun_slot", name);
+                if (oldName.equals(selectedSlotName)) selectedSlotName = name;
+                return true;
+            });
+        });
+    }
+
+    private void editPort(String name) {
+        JSONObject current = findSlot(name);
+        if (current == null) return;
+        ask("Slot SOCKS5 port", "" + current.optInt("port"), InputType.TYPE_CLASS_NUMBER, value -> editSlotNamed(name, (st, slots, si, patch) -> {
+            int port;
+            try { port = Integer.parseInt(value); } catch (NumberFormatException e) { port = 0; }
+            if (port < 1024 || port > 65534) { toast("Port must be between 1024 and 65534"); return false; }
+            slots.optJSONObject(si).put("port", port);
+            String clash = portClash(slots, st.optInt("entry_port"));
+            if (clash != null) { toast(clash); return false; }
+            return true;
+        }));
+    }
+
+    /** Each slot claims its port and its first-hop port; no two claims may meet. */
+    private static String portClash(JSONArray slots, int entryPort) {
+        java.util.Map<Integer, String> claimed = new java.util.HashMap<>();
+        for (int i = 0; i < slots.length(); i++) {
+            String name = slots.optJSONObject(i).optString("name");
+            int port = slots.optJSONObject(i).optInt("port"), hop = hopPort(slots, entryPort, i);
+            for (int p : new int[]{port, hop}) {
+                if (p <= 0) continue;
+                String owner = claimed.put(p, name);
+                if (owner != null) return "Port " + p + " is already used by " + (owner.equals(name) ? "this slot's first hop" : owner);
+            }
+        }
+        return null;
+    }
+
+    private static JSONObject findSlot(String name) {
+        JSONArray slots = Ctl.state == null ? null : Ctl.state.optJSONArray("slots");
+        for (int i = 0; slots != null && i < slots.length(); i++) if (name.equals(slots.optJSONObject(i).optString("name"))) return slots.optJSONObject(i);
+        return null;
+    }
+
+    private void removeSlot(String name) {
+        confirm("Delete " + name + "?", () -> editSlotNamed(name, (st, slots, si, patch) -> {
+            if (slots.length() <= 1) { toast("The last slot cannot be removed"); return false; }
+            slots.remove(si);
+            if (name.equals(selectedSlotName)) selectedSlotName = tunSlot(st);
+            return true;
+        }));
+    }
+
     private void intRow(LinearLayout parent, JSONObject st, String label, String key, int fallback, int min, int max) {
+        intRow(parent, st, label, key, fallback, min, max, null);
+    }
+
+    /** check returns why a number in range is still refused, or null. */
+    private void intRow(LinearLayout parent, JSONObject st, String label, String key, int fallback, int min, int max,
+                        java.util.function.IntFunction<String> check) {
         int current = st.optInt(key);
         if (current == 0 && fallback != 0) current = fallback;
         final int shown = current;
@@ -1749,14 +1992,31 @@ public class MainActivity extends Activity {
             try {
                 int number = Integer.parseInt(value);
                 if (number < min || number > max) { toast("Value must be between " + min + " and " + max); return; }
+                String refused = check == null ? null : check.apply(number);
+                if (refused != null) { toast(refused); return; }
                 Ctl.patch(key, number);
             } catch (NumberFormatException e) { toast("Enter a valid number"); }
         }));
     }
 
     private void textRow(LinearLayout parent, JSONObject st, String label, String key, String hint) {
+        textRow(parent, st, label, key, hint, null);
+    }
+
+    /** check returns why a value is refused, or null; an empty value always means the default. */
+    private void textRow(LinearLayout parent, JSONObject st, String label, String key, String hint, java.util.function.Function<String, String> check) {
         String current = st.optString(key);
-        actionRow(parent, label, current.isEmpty() ? hint : current, () -> ask(label, current, InputType.TYPE_TEXT_VARIATION_URI, value -> Ctl.patch(key, value)));
+        actionRow(parent, label, current.isEmpty() ? hint : current, () -> ask(label, current, InputType.TYPE_TEXT_VARIATION_URI, value -> {
+            String refused = check == null || value.isEmpty() ? null : check.apply(value);
+            if (refused != null) { toast(refused); return; }
+            Ctl.patch(key, value);
+        }));
+    }
+
+    private static final String IPV4 = "((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+
+    private static boolean ipAddress(String value) {
+        return value.matches(IPV4) || (value.contains(":") && value.matches("[0-9a-fA-F:.]+"));
     }
 
     private void boolRow(LinearLayout parent, JSONObject st, String label, String key, boolean inverted) {
@@ -1769,8 +2029,24 @@ public class MainActivity extends Activity {
     }
 
     private void actionRow(LinearLayout parent, String label, String value, Runnable action) {
-        LinearLayout row = row(text(label + "\n" + value, 13, TEXT, false), btn("Edit", false, action));
+        LinearLayout texts = new LinearLayout(this);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        texts.addView(text(label, 13, TEXT, false));
+        texts.addView(text(value, 12, MUTED, false));
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(4), 0, dp(4));
+        row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+        LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(-2, -2);
+        buttonParams.setMargins(dp(8), 0, 0, 0);
+        row.addView(btn("Edit", false, action), buttonParams);
         parent.addView(row);
+    }
+
+    /** The listen address is read when the engine starts; the VPN restarts it on Connect. */
+    private void restartEngine() {
+        if (VpnSvc.running) { toast("Applies the next time you connect"); return; }
+        body.postDelayed(() -> new Thread(Core::stopIdle).start(), 800);
     }
 
     private Switch toggle(String label, boolean checked, Consumer<Boolean> changed) {
@@ -1779,6 +2055,7 @@ public class MainActivity extends Activity {
         sw.setTextColor(TEXT);
         sw.setTextSize(13);
         sw.setPadding(0, dp(4), 0, dp(4));
+        sw.setMinHeight(dp(44));
         sw.setChecked(checked);
         if (Build.VERSION.SDK_INT >= 21) {
             sw.setThumbTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{ACCENT, MUTED}));
@@ -2044,8 +2321,10 @@ public class MainActivity extends Activity {
             itemsList.addView(item);
         }
         scroll.addView(itemsList);
-        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1.0f);
+        int listWidth = Math.min((int) (getResources().getDisplayMetrics().widthPixels * 0.90f), dp(380)) - dp(40);
+        itemsList.measure(View.MeasureSpec.makeMeasureSpec(listWidth, View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED);
+        int listHeight = Math.min(itemsList.getMeasuredHeight(), (int) (getResources().getDisplayMetrics().heightPixels * 0.55f));
+        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, listHeight);
         scrollParams.setMargins(0, 0, 0, dp(12));
         root.addView(scroll, scrollParams);
 
@@ -2060,10 +2339,8 @@ public class MainActivity extends Activity {
         if (dialog.getWindow() != null) {
             dialog.getWindow().setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
             int screenWidth = getResources().getDisplayMetrics().widthPixels;
-            int screenHeight = getResources().getDisplayMetrics().heightPixels;
             int dialogWidth = Math.min((int) (screenWidth * 0.90f), dp(380));
-            int dialogHeight = Math.min((int) (screenHeight * 0.70f), ViewGroup.LayoutParams.WRAP_CONTENT);
-            dialog.getWindow().setLayout(dialogWidth, dialogHeight);
+            dialog.getWindow().setLayout(dialogWidth, ViewGroup.LayoutParams.WRAP_CONTENT);
         }
         dialog.show();
     }
@@ -2131,9 +2408,10 @@ public class MainActivity extends Activity {
         return first;
     }
 
-    private static String listenHost(JSONObject st) {
+    /** A dialable host for the SOCKS listeners: a wildcard bind is reached on loopback. */
+    private static String connectHost(JSONObject st) {
         String address = st.optString("listen_addr");
-        return address.isEmpty() ? "0.0.0.0" : address;
+        return address.isEmpty() || address.equals("0.0.0.0") || address.equals("::") ? "127.0.0.1" : address;
     }
 
     private static int freePort(JSONObject st) {
@@ -2148,12 +2426,6 @@ public class MainActivity extends Activity {
         }
         for (int port = base + 2; port < 65535; port++) if (!used.contains(port) && !used.contains(port + 1)) return port;
         return 0;
-    }
-
-    private static String okCount(JSONArray probes) {
-        int ok = 0;
-        for (int i = 0; probes != null && i < probes.length(); i++) if (probes.optJSONObject(i).optBoolean("OK")) ok++;
-        return ok + "/" + (probes == null ? 0 : probes.length());
     }
 
     private static boolean anyMain(JSONObject st) {

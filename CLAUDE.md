@@ -206,13 +206,23 @@ or a **system-wide TUN** — with automatic tiered failover.
   runs whenever the UI is visible — **idle** (no tun fd → `TunEnabled` off; slots still serve SOCKS + probe, so
   Status shows live tiers before connecting) — and is restarted in **VPN mode** by `VpnSvc` on Connect;
   Disconnect kills it and `Ctl`'s loop brings an idle one back if the UI is visible; leaving the UI with the VPN
-  off stops it. **UI** (`MainActivity`, bare, programmatic views) is a **control client like the TUI** (`Ctl`:
+  off stops it. Idle start and stop are check-and-act under the daemon lock (`Core.startIdleIfNeeded`, `stopIdle`):
+  a separate check let a quick Disconnect → Connect replace the new VPN daemon with an idle one. The log has its own
+  lock, because `stopDaemon` waits up to 5 s for the process under the daemon lock and the UI thread reads the log.
+  `Ctl`'s loop sleeps while nothing needs the daemon (no UI, VPN or tile listener); each of those calls `Ctl.wake()`.
+  `run` prints the route on every check, so `Core.pump` keeps a status line only when it changed (ignoring the
+  egress ms). **UI** (`MainActivity`, bare, programmatic views) is a **control client like the TUI** (`Ctl`:
   `LocalSocket` → `control.sock`, JSON lines; `state`/`status` events in, `patch`/`addsub`/`rmsub`/`refetch`/`kick`
   out), so every edit applies **live** to the running daemon, VPN up or not. The footer has **Settings**,
-  **Overview**, and **Log**. All three are page switches; Overview contains connection metrics, route,
-  endpoints, and pools. Log retains 2000 records and provides severity, module, and live text filters.
+  **Overview**, and **Log**. All three are page switches. Overview mirrors the desktop: a "Finish setup" checklist
+  while no exit exists, a Connection card (headline and hint as `connectionSummary`/`connectionHint`, a ROUTE line,
+  Latency / Route type / Slots serving, the note, a VPN error box), Local endpoints (VPN chip, address and first
+  hop, the slot's `liveState` tag, Copy / Copy hop; `connectHost` turns a wildcard bind into `127.0.0.1`), and
+  Entry pools (online count, meter, failure rate, fastest, in use). Log retains 2000 records and provides severity,
+  module, and live text filters; records are drawn with a muted time, a colored level and the origin, and redrawn
+  at most every 250 ms, following new lines only while scrolled to the bottom.
   An enlarged native switch in the header controls the VPN and displays
-  Disconnected/Connecting/Connected in a fixed-width, single-line label that cannot clip the final letters. Settings uses
+  Disconnected/Connecting/No route/Connected in a fixed-width, single-line label that cannot clip the final letters. Settings uses
   a bordered **Settings type** group with an inline accordion list: category choices expand beneath the selector with
   animated height and a right-edge chevron rotates to show state, pushing settings downward without overlapping the
   interface. Every category has a description
@@ -233,9 +243,16 @@ or a **system-wide TUN** — with automatic tiered failover.
   `sortProbes` (same order as desktop), a pin banner, and node rows with tags, share and Pin. Export dialogs
   (`showShare`) page through links with a QR code (`Exports.qr`, whole-pixel scaling), Copy link / Copy all links /
   Copy as subscription. QR codes, exported links and parsed exits come from the Go binary's hidden `share` command,
-  so Android exports the same text as desktop. Status events redraw these two sections (`queueLiveRender`, at most
-  every 1.5 s, keeping scroll and search focus) except while the category list is open or the search text was
-  typed in the last 3 s: a rebuild resets the keyboard's composing text. `FlowLayout` wraps chips.
+  so Android exports the same text as desktop; a reply arriving after the activity finished is dropped. Status
+  events redraw Overview and these two sections (`queueLiveRender`, at most every 1.5 s, keeping scroll and search
+  focus) except while a finger is down (`dispatchTouchEvent`: a rebuild between press and release drops the tap),
+  the category list is open, or the search text was typed in the last 3 s: a rebuild resets the keyboard's composing
+  text. `FlowLayout` wraps chips. Node share uses the node of the group's own provider (`NodeGroup.nodes`), since
+  names repeat across providers. The activity handles rotation and similar changes itself (`configChanges`,
+  `onConfigurationChanged` → `render`), so the page, filters and open dialogs survive. Network has no "Listen port"
+  row (slot ports are per slot); "Allow LAN connections" is a switch that restarts the idle engine, since the
+  listen address is read at start. VPN settings are validated (IP resolver, IPv4 network, MTU 0 or 576-9000), and
+  ports by `portClash`/the first-hop check, mirroring `SlotPortConflict`/`EntryPortConflict`.
   `VpnSvc` publishes a live notification with the canonical resource-ID overload of `setSmallIcon`, using a dedicated
   white-on-transparent drawable. The application icon is a separate legacy mipmap plus an Android 8+ adaptive icon
   (including monochrome), so OEM notification rows that substitute the application icon do not depend on the small
@@ -245,7 +262,8 @@ or a **system-wide TUN** — with automatic tiered failover.
   consent; consent opens MainActivity. Resource linking runs before javac and generates `R.java`.
   Slot/main edits are done Java-side on the state JSON and sent as a top-level `slots` patch (full objects —
   the daemon's patch is a field replace; a fresh slot's `mains` is JSON `null` — a Go nil slice — so the app
-  creates the array). Edit failures go to the Log tab + a toast, never swallowed.
+  creates the array). Slot edits go through `editSlotNamed` (by name, on the latest state), like exits. Edit failures
+  go to the Log tab + a toast, never swallowed; a failed VPN start toasts too.
   Host-testable without a phone: build with a `go build -overlay` that swaps the `*_android.go` files in
   under a `linux` tag, then hand it a tun fd from `unshare -Urn` (the netns stands in for the VPN).
 - `dist/` — prebuilt release binaries (**not committed**; build artifacts).

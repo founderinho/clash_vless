@@ -17,6 +17,7 @@ public class VpnTileService extends TileService {
         super.onStartListening();
         Ctl.start(this);
         Ctl.tileListener = stateChanged -> updateTile();
+        Ctl.wake();
         updateTile();
     }
 

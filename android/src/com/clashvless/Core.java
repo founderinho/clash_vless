@@ -29,6 +29,7 @@ final class Core {
 
     static final class Entry {
         final String line, level, module;
+        final boolean structured; // "time LEVEL origin message", as loghub writes it
 
         Entry(String line) {
             this.line = line;
@@ -42,48 +43,56 @@ final class Core {
             }
             this.level = level;
             this.module = module;
+            this.structured = parts.length == 4 && parts[0].length() == 12 && level.equals(parts[1]);
         }
     }
 
     private static final int LOG_MAX = 2000;
     private static final ArrayList<Entry> log = new ArrayList<>();
-    private static Listener listener;
+    // Separate from the daemon lock: stopDaemon waits for the process under that one.
+    private static final Object LOG = new Object();
+    private static volatile Listener listener;
 
     static volatile boolean uiVisible;
     private static Process daemon;
     private static boolean daemonVpn;
 
-    static synchronized void log(String line) {
-        log.add(new Entry(line));
-        if (log.size() > LOG_MAX) log.remove(0);
-        if (listener != null) listener.onLine(line);
+    static void log(String line) {
+        synchronized (LOG) {
+            log.add(new Entry(line));
+            if (log.size() > LOG_MAX) log.remove(0);
+        }
+        Listener l = listener;
+        if (l != null) l.onLine(line);
     }
 
-    static synchronized void setListener(Listener l) {
+    static void setListener(Listener l) {
         listener = l;
     }
 
-    static synchronized void clearLog() {
-        log.clear();
+    static void clearLog() {
+        synchronized (LOG) { log.clear(); }
     }
 
-    static synchronized List<String> modules() {
+    static List<String> modules() {
         Set<String> found = new LinkedHashSet<>();
-        for (Entry entry : log) found.add(entry.module);
+        synchronized (LOG) { for (Entry entry : log) found.add(entry.module); }
         List<String> result = new ArrayList<>(found);
         java.util.Collections.sort(result);
         return result;
     }
 
-    static synchronized String filteredLog(Set<String> levels, String module, String query) {
-        StringBuilder result = new StringBuilder();
-        for (Entry entry : log) {
-            if (!levels.contains(entry.level)) continue;
-            if (!module.isEmpty() && !module.equals(entry.module)) continue;
-            if (!textMatches(entry.line, query)) continue;
-            result.append(entry.line).append('\n');
+    static List<Entry> filteredLog(Set<String> levels, String module, String query) {
+        List<Entry> result = new ArrayList<>();
+        synchronized (LOG) {
+            for (Entry entry : log) {
+                if (!levels.contains(entry.level)) continue;
+                if (!module.isEmpty() && !module.equals(entry.module)) continue;
+                if (!textMatches(entry.line, query)) continue;
+                result.add(entry);
+            }
         }
-        return result.toString();
+        return result;
     }
 
     private static boolean textMatches(String line, String query) {
@@ -131,8 +140,14 @@ final class Core {
         new File(dir(c), "cv").setExecutable(true);
     }
 
-    static synchronized boolean daemonAlive() {
-        return daemon != null;
+    /** The check and the start are one step, so a VPN daemon started meanwhile is never replaced. */
+    static synchronized void startIdleIfNeeded(Context c) throws java.io.IOException {
+        if (uiVisible && !VpnSvc.running && daemon == null) startDaemon(c, null);
+    }
+
+    /** Stops the daemon only while it is the idle one, never a VPN daemon started meanwhile. */
+    static synchronized void stopIdle() {
+        if (daemon != null && !daemonVpn && !VpnSvc.running) stopDaemon();
     }
 
     /** (Re)starts the daemon; tunSock != null = VPN mode (it waits for the fd there). */
@@ -180,12 +195,23 @@ final class Core {
     }
 
     private static void pump(Process p) throws java.io.IOException {
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+        String lastStatus = "";
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
             for (String l; (l = r.readLine()) != null; ) {
-                if (!l.startsWith("WARNING: linker:")) log(l); // old bionic nags about Go's DT_FLAGS_1
+                if (l.startsWith("WARNING: linker:")) continue; // old bionic nags about Go's DT_FLAGS_1
+                // `run` prints the route on every check; keep only changes, or it floods the log.
+                if (STATUS_LINE.matcher(l).find()) {
+                    String key = EGRESS.matcher(l.substring(11)).replaceAll("");
+                    if (key.equals(lastStatus)) continue;
+                    lastStatus = key;
+                }
+                log(l);
             }
         }
     }
+
+    private static final java.util.regex.Pattern STATUS_LINE = java.util.regex.Pattern.compile("^\\[\\d\\d:\\d\\d:\\d\\d\\] ");
+    private static final java.util.regex.Pattern EGRESS = java.util.regex.Pattern.compile("egress \\d+ms");
 
     /** The underlying network's resolvers (Go has no /etc/resolv.conf to read on Android). */
     static String dns(Context c) {

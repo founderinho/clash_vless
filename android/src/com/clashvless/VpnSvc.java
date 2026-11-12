@@ -43,6 +43,7 @@ public class VpnSvc extends VpnService {
             Ctl.status = null;
             Ctl.start(this);
             Ctl.notificationListener = stateChanged -> updateNotification();
+            Ctl.wake();
             Ctl.changed();
             VpnTileService.refresh(this);
             new Thread(this::startup).start();
@@ -92,6 +93,7 @@ public class VpnSvc extends VpnService {
     }
 
     private void updateNotification() {
+        if (!running) return;
         getSystemService(NotificationManager.class).notify(NOTIFICATION_ID, buildNotification());
     }
 
@@ -122,6 +124,8 @@ public class VpnSvc extends VpnService {
             Core.log("> VPN up (tun fd handed to daemon)");
         } catch (Exception e) {
             Core.log("VPN start failed: " + e);
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
+                    android.widget.Toast.makeText(this, "VPN start failed: " + e.getMessage(), android.widget.Toast.LENGTH_LONG).show());
             shutdown();
         }
     }
@@ -169,6 +173,7 @@ public class VpnSvc extends VpnService {
         }
         if (was) Core.log("x VPN off");
         stopForeground(STOP_FOREGROUND_REMOVE);
+        getSystemService(NotificationManager.class).cancel(NOTIFICATION_ID); // a status update can land after the line above
         stopSelf();
     }
 

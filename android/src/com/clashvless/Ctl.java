@@ -20,6 +20,7 @@ final class Ctl {
     static volatile Listener listener, notificationListener, tileListener;
     private static OutputStream out;
     private static boolean started;
+    private static final Object WAKE = new Object();
 
     /** Starts the (re)connect loop once; it also keeps an idle daemon up while the UI is visible. */
     static synchronized void start(Context c) {
@@ -28,8 +29,13 @@ final class Ctl {
         final Context app = c.getApplicationContext();
         new Thread(() -> {
             while (true) {
+                synchronized (WAKE) { // checked under the lock, so a wake() between check and wait isn't lost
+                    while (!Core.uiVisible && !VpnSvc.running && tileListener == null) {
+                        try { WAKE.wait(); } catch (InterruptedException ignored) { }
+                    }
+                }
                 try {
-                    if (Core.uiVisible && !VpnSvc.running && !Core.daemonAlive()) Core.startDaemon(app, null);
+                    Core.startIdleIfNeeded(app);
                     session(app);
                 } catch (Exception ignored) { }
                 setOut(null);
@@ -60,6 +66,11 @@ final class Ctl {
                 }
             }
         }
+    }
+
+    /** Something needs the daemon again (UI, VPN or tile): stop idling. */
+    static void wake() {
+        synchronized (WAKE) { WAKE.notifyAll(); }
     }
 
     private static synchronized void setOut(OutputStream o) {
