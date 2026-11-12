@@ -167,8 +167,10 @@ or a **system-wide TUN** — with automatic tiered failover.
   paste works in the classic console.
   Re-apply **all five** after any re-vendor. Upstream later replaced gVisor in the tun
   inbound with its own stack (2026-10), so a real xray-core bump must re-check (1) and (3), not just re-apply.
-- `android/` — **Android app** (minimal UX, core only). No Gradle: `android/build.sh` does
-  go → javac → d8 → aapt2 → zipalign → apksigner into `dist/clashvless.apk`. **minSdk 24** (Android 7; API-26
+- `android/` — **Android app** (minimal UX, core only). No Gradle: `android/build_apk.py` (plain Python, the same
+  on every OS) does go → aapt2 → javac → d8 → zipalign → apksigner into `dist/clashvless.apk`. cgo builds use the NDK's
+  per-target wrappers (`<triple>24-clang`, `.cmd` via an 8.3 path on Windows), not `clang --target`: Go probes linker
+  flags without the extra argument, which dropped the build-id and exported cgo internals on armeabi-v7a. **minSdk 24** (Android 7; API-26
   calls are version-guarded), target 34. ABIs: **arm64** + **armeabi-v7a** + **x86_64** (for emulator tests), all built
   **with cgo** via the NDK's clang (`$ANDROID_HOME/ndk`, Windows/Linux host toolchains) so Go resolves through bionic
   `getaddrinfo` → netd = the **system resolver** (Private DNS, per-network — the browser's path). Without an NDK only
@@ -232,16 +234,16 @@ or a **system-wide TUN** — with automatic tiered failover.
 General build messages persist; package progress occupies one replacing subline on a terminal,
 while compiler diagnostics are retained. Windows outputs both windowed and CLI executables;
 Wintun is embedded from the committed signed archive, so builds need no DLL download.
-It then builds `dist/clashvless.apk` through `android/build.sh` when the tools are present (`android_toolchain`):
-an SDK with `platforms;android-34` + `build-tools;35.0.0` (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, or the default
-locations), a JDK 17+ (`JAVA_HOME`, `~/.jdks`, or `PATH`), bash (Git/MSYS2 bash on Windows, never WSL's), and `zip`.
+It then builds `dist/clashvless.apk` with `android/build_apk.py` when its tools are present (`missing()`):
+Go, an SDK with `platforms;android-34` + `build-tools;35.0.0` (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, or the default
+locations), and a JDK 17+ (`JAVA_HOME`, `~/.jdks`, or `PATH`). No bash or `zip`: packaging uses Python's zipfile.
 Otherwise it says what is missing and skips; `--apk` makes that an error, `--no-apk` skips it. The APK step drops
 `GOOS`/`GOARCH`/`CC`/`CGO_ENABLED` so a desktop cross-build's settings don't reach the per-ABI builds.
 ```
 go -C app build -o ../dist/clashvless .     # build the single binary
 go -C app run . [command]                   # run from source
 go -C app build ./...                        # compile-check every package
-android/build.sh                             # → dist/clashvless.apk (needs $ANDROID_HOME: platforms;android-34 + build-tools;35.0.0; 34.0.0 d8 crashes on MainActivity)
+python android/build_apk.py                  # → dist/clashvless.apk only (platforms;android-34 + build-tools;35.0.0; 34.0.0 d8 crashes on MainActivity)
 ```
 The GUI toolkit needs cgo, so cross-compiling for Windows takes mingw:
 `GOOS=windows CGO_ENABLED=1 CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ go -C app build -o ../dist/clashvless.exe .`
