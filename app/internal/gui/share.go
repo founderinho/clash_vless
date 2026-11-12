@@ -1,0 +1,212 @@
+//go:build !android && cgo
+
+package gui
+
+import (
+	"encoding/base64"
+	"fmt"
+	"image"
+	"image/color"
+	"net/url"
+	"strings"
+
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
+	"fyne.io/fyne/v2/widget"
+	"rsc.io/qr"
+
+	"clashvless/internal/store"
+	"clashvless/internal/xray"
+)
+
+type shareLink struct {
+	Name string
+	URL  string
+	Note string // why the link differs from the stored config, if it does
+}
+
+// mainShareLink names the exported link after the exit as it is shown here.
+func mainShareLink(main store.Main) shareLink {
+	link := main.URL
+	if parsed, err := url.Parse(main.URL); err == nil && strings.TrimSpace(main.Name) != "" {
+		parsed.Fragment, parsed.RawFragment = strings.TrimSpace(main.Name), ""
+		link = parsed.String()
+	}
+	return shareLink{Name: main.Name, URL: link}
+}
+
+func nodeShareLink(node store.Node) (shareLink, error) {
+	if strings.HasPrefix(strings.ToLower(node.Raw), "vless://") {
+		return shareLink{Name: node.Name, URL: node.Raw}, nil
+	}
+	link, dropped, err := xray.OutboundToVLESS(node.Outbound, node.Name)
+	if err != nil {
+		return shareLink{}, err
+	}
+	note := ""
+	if len(dropped) > 0 {
+		note = "Not representable in a link, left out: " + strings.Join(dropped, ", ")
+	}
+	return shareLink{Name: node.Name, URL: link, Note: note}, nil
+}
+
+func nodeShareLinks(nodes []store.Node) (links []shareLink, skipped int) {
+	for _, node := range nodes {
+		link, err := nodeShareLink(node)
+		if err != nil {
+			skipped++
+			continue
+		}
+		links = append(links, link)
+	}
+	return links, skipped
+}
+
+// qrImage renders text as dark modules on white with the standard quiet zone,
+// one pixel per module; the canvas scales it up without smoothing.
+func qrImage(text string) (image.Image, error) {
+	code, err := qr.Encode(text, qr.M)
+	if err != nil {
+		code, err = qr.Encode(text, qr.L)
+	}
+	if err != nil {
+		return nil, err
+	}
+	const quiet = 4
+	side := code.Size + 2*quiet
+	img := image.NewGray(image.Rect(0, 0, side, side))
+	for i := range img.Pix {
+		img.Pix[i] = 0xff
+	}
+	for y := 0; y < code.Size; y++ {
+		for x := 0; x < code.Size; x++ {
+			if code.Black(x, y) {
+				img.SetGray(x+quiet, y+quiet, color.Gray{})
+			}
+		}
+	}
+	return img, nil
+}
+
+func subscriptionBlob(links []shareLink) string {
+	urls := make([]string, len(links))
+	for i, link := range links {
+		urls[i] = link.URL
+	}
+	return base64.StdEncoding.EncodeToString([]byte(strings.Join(urls, "\n")))
+}
+
+func joinedLinks(links []shareLink) string {
+	urls := make([]string, len(links))
+	for i, link := range links {
+		urls[i] = link.URL
+	}
+	return strings.Join(urls, "\n")
+}
+
+// showShare is a Marzban-style export: a QR code per link with copy actions, and
+// whole-list copies (plain or as a base64 subscription) when there are several.
+func (d *dashboard) showShare(title string, links []shareLink, skipped int) {
+	if len(links) == 0 {
+		d.notify("Nothing to export")
+		return
+	}
+	index := 0
+	name := widget.NewLabel("")
+	name.TextStyle = fyne.TextStyle{Bold: true}
+	name.Truncation = fyne.TextTruncateEllipsis
+	counter := muted("")
+	qrView := canvas.NewImageFromImage(nil)
+	qrView.FillMode = canvas.ImageFillContain
+	qrView.ScaleMode = canvas.ImageScalePixels
+	qrView.SetMinSize(fyne.NewSize(260, 260))
+	qrError := wrappingMuted("")
+	link := widget.NewLabel("")
+	link.Wrapping = fyne.TextWrapBreak
+	link.Selectable = true
+	link.SizeName = theme.SizeNameCaptionText
+	note := wrappingMuted("")
+	note.Importance = widget.WarningImportance
+
+	var prev, next *widget.Button
+	show := func() {
+		item := links[index]
+		name.SetText(strings.Join(strings.Fields(item.Name), " "))
+		counter.Text = fmt.Sprintf("%d of %d", index+1, len(links))
+		counter.Refresh()
+		if img, err := qrImage(item.URL); err == nil {
+			qrView.Image = img
+			qrView.Show()
+			qrError.Hide()
+		} else {
+			qrView.Hide()
+			qrError.SetText("This link is too long for a QR code; copy it instead.")
+			qrError.Show()
+		}
+		qrView.Refresh()
+		link.SetText(item.URL)
+		note.SetText(item.Note)
+		note.Hidden = item.Note == ""
+		note.Refresh()
+		if prev != nil {
+			if index == 0 {
+				prev.Disable()
+			} else {
+				prev.Enable()
+			}
+			if index == len(links)-1 {
+				next.Disable()
+			} else {
+				next.Enable()
+			}
+		}
+	}
+	copyText := func(value, message string) {
+		d.app.Clipboard().SetContent(value)
+		d.notify(message)
+	}
+	actions := container.NewHBox(widget.NewButtonWithIcon("Copy link", theme.ContentCopyIcon(), func() {
+		copyText(links[index].URL, "Link copied")
+	}))
+	header := []fyne.CanvasObject{container.NewBorder(nil, nil, nil, counter, name)}
+	if len(links) > 1 {
+		prev = widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() { index--; show() })
+		next = widget.NewButtonWithIcon("", theme.NavigateNextIcon(), func() { index++; show() })
+		actions = container.NewHBox(prev, next, actions.Objects[0])
+	}
+	body := append(header,
+		container.NewCenter(container.NewStack(canvas.NewRectangle(color.White), qrView)),
+		qrError,
+		link,
+		note,
+	)
+	footer := []fyne.CanvasObject{actions}
+	if len(links) > 1 {
+		summary := fmt.Sprintf("%d links", len(links))
+		if skipped > 0 {
+			summary += fmt.Sprintf(" · %d non-VLESS nodes skipped", skipped)
+		}
+		footer = append(footer, widget.NewSeparator(), muted(summary), container.NewHBox(
+			widget.NewButtonWithIcon("Copy all links", theme.ContentCopyIcon(), func() {
+				copyText(joinedLinks(links), fmt.Sprintf("%d links copied", len(links)))
+			}),
+			widget.NewButtonWithIcon("Copy as subscription", theme.ContentCopyIcon(), func() {
+				copyText(subscriptionBlob(links), "Base64 subscription copied")
+			}),
+		))
+	}
+	show()
+	// The actions stay pinned below; only a long link scrolls.
+	scroll := container.NewVScroll(container.NewVBox(body...))
+	bottom := container.NewVBox(footer...)
+	content := container.NewBorder(nil, bottom, nil, nil, scroll)
+	form := dialog.NewCustom(title, "Close", content, d.window)
+	height := scroll.Content.MinSize().Height + bottom.MinSize().Height + 180
+	form.Resize(fitScreen(fyne.NewSize(560, height)))
+	d.showDialog(form)
+}
+
+func qrIcon() fyne.Resource { return brandIcon("qr") }

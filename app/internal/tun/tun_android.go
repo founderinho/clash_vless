@@ -2,6 +2,8 @@
 
 package tun
 
+import "net"
+
 // On Android the app's VpnService owns the device, routes and DNS, hands the fd
 // to xray via XRAY_TUN_FD, and excludes this app's UID from the VPN — so every
 // xray socket is already off-tun and the OS layer here is a no-op.
@@ -35,3 +37,5 @@ func (m *Manager) osReapplyDNS(string, bool) error { return nil }
 func currentDHCPResolver(string) string { return "" }
 
 func HealStaleResolver() (bool, string) { return false, "" }
+
+func (m *Manager) osSetServerIPs([]net.IP) {}

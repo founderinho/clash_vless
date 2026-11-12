@@ -4,7 +4,9 @@ package gui
 
 import (
 	"fmt"
+	"net"
 	"strconv"
+	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
@@ -48,13 +50,13 @@ func (d *dashboard) settingsView() fyne.CanvasObject {
 			panel("Virtual interface", "Changes apply when the VPN reconnects",
 				d.textSetting("Device name", "tun_name", d.state.TunName, "Platform default"),
 				d.textSetting("Interface address", "tun_addr", d.state.TunAddr, "198.18.0.1/30"),
-				d.numberSetting("MTU · 0 = default", "tun_mtu", d.state.TunMTU, 0, 9000),
+				d.numberSetting("MTU · 0 = default", "tun_mtu", d.state.TunMTU, 576, 9000, true),
 			),
 		)
 	case "Subscriptions":
 		content = panel("Subscription updates", "Background refresh and optional fetch proxy",
 			d.boolSetting("Automatic refresh", "no_auto_fetch", d.state.AutoFetch(), false, true),
-			d.numberSetting("Refresh interval · hours", "fetch_interval_h", effective(d.state.FetchIntervalH, 24), 1, 168),
+			d.numberSetting("Refresh interval · hours", "fetch_interval_h", effective(d.state.FetchIntervalH, 24), 1, 168, false),
 			d.boolSetting("Use fetch proxy", "use_fetch_proxy", d.state.UseFetchProxy, true, false),
 			d.textSetting("Fetch proxy", "fetch_proxy", d.state.FetchProxy, "socks5://127.0.0.1:2084"),
 		)
@@ -72,14 +74,13 @@ func (d *dashboard) settingsView() fyne.CanvasObject {
 			panel("Automatic failover", "Route selection, health checks, and recovery",
 				d.selectSetting("Pin tier", "pin_tier", strconv.Itoa(d.state.PinTier), []string{"0", "1", "2", "3"}, map[string]string{"0": "Automatic", "1": "T1 · Direct", "2": "T2 · Country", "3": "T3 · Bypass"}),
 				d.boolSetting("Force a hop · skip T1", "force_hop", d.state.ForceHop, true, false),
-				d.numberSetting("Probe interval · seconds", "interval_s", effective(d.state.Interval, 12), 2, 600),
-				d.numberSetting("Egress timeout · seconds", "timeout_s", effective(d.state.Timeout, 6), 1, 60),
-				d.numberSetting("Recovery threshold", "up_threshold", effective(d.state.UpThreshold, 3), 1, 10),
-				d.numberSetting("Failure threshold", "down_threshold", effective(d.state.DownThreshold, 2), 1, 10),
+				d.numberSetting("Probe interval · seconds", "interval_s", effective(d.state.Interval, 12), 2, 600, false),
+				d.numberSetting("Egress timeout · seconds", "timeout_s", effective(d.state.Timeout, 6), 1, 60, false),
+				d.numberSetting("Recovery threshold", "up_threshold", effective(d.state.UpThreshold, 3), 1, 10, false),
+				d.numberSetting("Failure threshold", "down_threshold", effective(d.state.DownThreshold, 2), 1, 10, false),
 			),
-			panel("Local listeners", "Listener and log changes apply after a daemon restart",
-				d.numberSetting("Listen port", "listen_port", d.state.ListenPort, 1024, 65534),
-				d.numberSetting("First-hop port · 0 = auto", "entry_port", d.state.EntryPort, 0, 65535),
+			panel("Local listeners", "Each slot's SOCKS5 port is set in Exit routes. Listener and log changes apply after a daemon restart",
+				d.numberSetting("First-hop port · 0 = auto", "entry_port", d.state.EntryPort, 1024, 65535, true),
 				d.boolSetting("Allow LAN connections", "listen_addr", d.state.ListenHost() == "0.0.0.0", "0.0.0.0", "127.0.0.1"),
 				d.selectSetting("Xray log level", "log_level", d.state.Loglevel(), []string{"none", "error", "warning", "info", "debug"}, nil),
 			),
@@ -101,38 +102,89 @@ func infoRow(name, value string) fyne.CanvasObject {
 	return container.NewVBox(muted(name), ellipsized(value))
 }
 
-func (d *dashboard) numberSetting(name, key string, current, min, max int) fyne.CanvasObject {
-	entry := widget.NewEntry()
-	entry.SetText(strconv.Itoa(current))
+// settingEntry is a text field whose unsaved text survives page rebuilds.
+func (d *dashboard) settingEntry(key, current, placeholder string) *widget.Entry {
+	text, drafted := d.drafts[key]
+	if !drafted {
+		text = current
+	}
+	return d.textInput("setting:"+key, placeholder, text, func(value string) {
+		if value == current {
+			delete(d.drafts, key)
+		} else {
+			d.drafts[key] = value
+		}
+	})
+}
+
+func (d *dashboard) saveSetting(key string, value any) {
+	delete(d.drafts, key)
+	d.patch(map[string]any{key: value})
+}
+
+// numberSetting accepts a value in min..max, or 0 (the default) when zeroOK.
+func (d *dashboard) numberSetting(name, key string, current, min, max int, zeroOK bool) fyne.CanvasObject {
+	entry := d.settingEntry(key, strconv.Itoa(current), "")
 	save := widget.NewButtonWithIcon("", theme.ConfirmIcon(), func() {
-		value, err := strconv.Atoi(entry.Text)
-		if err != nil || value < min || value > max {
-			d.notify(fmt.Sprintf("%s must be between %d and %d", name, min, max))
+		value, err := strconv.Atoi(strings.TrimSpace(entry.Text))
+		if err != nil || (value < min || value > max) && !(zeroOK && value == 0) {
+			if zeroOK {
+				d.notify(fmt.Sprintf("%s must be 0 or between %d and %d", name, min, max))
+			} else {
+				d.notify(fmt.Sprintf("%s must be between %d and %d", name, min, max))
+			}
 			return
 		}
-		d.patch(map[string]any{key: value})
+		if key == "entry_port" && d.state.EntryPortConflict(value) {
+			d.notify("That port is already used by a slot or its first hop")
+			return
+		}
+		d.saveSetting(key, value)
 	})
 	entry.OnSubmitted = func(string) { save.OnTapped() }
 	return settingRow(name, container.NewBorder(nil, nil, nil, save, container.New(&widthLayout{width: 180}, entry)))
 }
 
-func (d *dashboard) textSetting(name, key, current, placeholder string) fyne.CanvasObject {
-	entry := widget.NewEntry()
-	entry.SetText(current)
-	entry.SetPlaceHolder(placeholder)
-	save := widget.NewButtonWithIcon("", theme.ConfirmIcon(), func() {
-		value := entry.Text
-		if key == "device_hwid" {
-			if !store.ValidHWID(value) {
-				d.notify("HWID must be 10–64 letters, digits, = or -")
-				return
+func validateText(key, value string) string {
+	switch key {
+	case "device_hwid":
+		if !store.ValidHWID(value) {
+			return "HWID must be 10–64 letters, digits, = or -"
+		}
+	case "tun_static_dns":
+		if value != "" && net.ParseIP(value) == nil {
+			return "DNS resolver must be an IP address"
+		}
+	case "tun_addr":
+		if value != "" {
+			if ip, _, err := net.ParseCIDR(value); err != nil || ip.To4() == nil {
+				return "Interface address must be an IPv4 CIDR such as 198.18.0.1/30"
 			}
+		}
+	case "tun_name":
+		if strings.ContainsAny(value, " \t/") {
+			return "Device name cannot contain spaces or /"
+		}
+	}
+	return ""
+}
+
+func (d *dashboard) textSetting(name, key, current, placeholder string) fyne.CanvasObject {
+	entry := d.settingEntry(key, current, placeholder)
+	save := widget.NewButtonWithIcon("", theme.ConfirmIcon(), func() {
+		value := strings.TrimSpace(entry.Text)
+		if problem := validateText(key, value); problem != "" {
+			d.notify(problem)
+			return
+		}
+		if key == "device_hwid" {
 			device := d.state.Device
 			device.HWID = value
+			delete(d.drafts, key)
 			d.patch(map[string]any{"device": device})
 			return
 		}
-		d.patch(map[string]any{key: value})
+		d.saveSetting(key, value)
 	})
 	entry.OnSubmitted = func(string) { save.OnTapped() }
 	return settingRow(name, container.NewBorder(nil, nil, nil, save, container.New(&widthLayout{width: 180}, entry)))

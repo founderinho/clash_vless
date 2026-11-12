@@ -73,6 +73,7 @@ func Fetch(device store.Device, subURL, proxyAddr string) ([]store.Node, string,
 			}}
 		}
 	}
+	defer tr.CloseIdleConnections() // a fresh transport per fetch would otherwise keep its connection
 	client := &http.Client{Timeout: 30 * time.Second, Transport: tr}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -175,8 +176,7 @@ func parseURI(uri string) (store.Node, bool) {
 			return store.Node{}, false
 		}
 		port, _ := strconv.Atoi(u.Port())
-		name, _ := url.QueryUnescape(u.Fragment)
-		name = strings.TrimSpace(name)
+		name := strings.TrimSpace(u.Fragment) // url.Parse already decoded it
 		n := store.Node{
 			Raw:       uri,
 			Name:      name,

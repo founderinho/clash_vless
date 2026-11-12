@@ -424,3 +424,5 @@ func (m *Manager) restoreDNS() {
 		m.savedResolv = nil
 	}
 }
+
+func (m *Manager) osSetServerIPs([]net.IP) {}

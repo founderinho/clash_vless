@@ -5,6 +5,7 @@ package gui
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -50,6 +51,9 @@ func (d *dashboard) overviewView() fyne.CanvasObject {
 	vpnControl := container.NewVBox(headingText(vpnLabel, 12), container.NewCenter(vpnSwitch))
 
 	route := status.Entry + "  →  " + status.Main
+	if status.Entry == "" {
+		route = "Direct  →  " + status.Main
+	}
 	if !online {
 		route = status.Err
 		if route == "" {
@@ -88,19 +92,22 @@ func (d *dashboard) overviewView() fyne.CanvasObject {
 	if d.state != nil {
 		tunSlot = d.state.TunSlotName()
 	}
-	for _, slot := range d.state.Slots {
+	for index, slot := range d.state.Slots {
 		if !slot.Enabled {
 			continue
 		}
-		address := fmt.Sprintf("socks5://%s:%d", d.state.ListenHost(), slot.Port)
+		address := fmt.Sprintf("socks5://%s", net.JoinHostPort(connectHost(d.state.ListenHost()), strconv.Itoa(slot.Port)))
 		details := address
+		if hop := d.state.HopPort(index); hop > 0 {
+			details += fmt.Sprintf(" · first hop :%d", hop)
+		}
 		if tunSlot != "" && slot.Name == tunSlot {
 			details += " · VPN slot"
 		}
 		endpointItems = append(endpointItems, flexRow(
 			container.NewVBox(strong(slot.Name), ellipsized(details)),
 			widget.NewButtonWithIcon("Copy", theme.ContentCopyIcon(), func(value string) func() {
-				return func() { d.window.Clipboard().SetContent(value); d.notify("Address copied") }
+				return func() { d.app.Clipboard().SetContent(value); d.notify("Address copied") }
 			}(address)),
 		))
 	}
@@ -173,11 +180,24 @@ func (d *dashboard) subscriptionsView() fyne.CanvasObject {
 				d.patch(map[string]any{"auto_select": false, "active_sub": index})
 			}))
 		}
-		actions = append(actions, widget.NewButtonWithIcon("", theme.DeleteIcon(), func() {
-			d.confirm("Remove subscription", "Remove "+sub.Name+" and its cached nodes?", func() {
-				d.command(control.Command{Cmd: "rmsub", Index: index}, "Subscription removed")
-			})
-		}))
+		actions = append(actions,
+			d.iconButton(qrIcon(), "Export nodes as VLESS links", func() {
+				links, skipped := nodeShareLinks(sub.Nodes)
+				d.showShare("Export · "+sub.Name, links, skipped)
+			}),
+			d.iconButton(theme.DeleteIcon(), "Remove subscription", func() {
+				d.confirm("Remove subscription", "Remove "+sub.Name+" and its cached nodes?", func() {
+					// Remove by URL: another client may have removed an earlier subscription meanwhile.
+					for current, candidate := range d.state.Subs {
+						if candidate.URL == sub.URL {
+							d.command(control.Command{Cmd: "rmsub", Index: current}, "Subscription removed")
+							return
+						}
+					}
+					d.notify("This subscription was already removed")
+				})
+			}),
+		)
 		providerItems = append(providerItems, widget.NewSeparator(), flexRow(
 			container.NewVBox(ellipsized(sub.Name), muted(fmt.Sprintf("%d nodes · %s%s", len(sub.Nodes), updated, active))),
 			container.NewHBox(actions...),
@@ -227,15 +247,28 @@ func (d *dashboard) subscriptionsView() fyne.CanvasObject {
 			if d.state.PinEntry == probe.Name {
 				pin = "Unpin"
 			}
+			share := d.iconButton(qrIcon(), "Share as VLESS link", func() {
+				node := d.state.FindNodeByName(probe.Name)
+				if node == nil {
+					d.notify("This node is no longer in your subscriptions")
+					return
+				}
+				link, err := nodeShareLink(*node)
+				if err != nil {
+					d.notify("Cannot export: " + err.Error())
+					return
+				}
+				d.showShare("Share entry node", []shareLink{link}, 0)
+			})
 			nodeItems = append(nodeItems, flexRow(
 				container.NewVBox(ellipsized(probe.Name), muted(probe.Server+" · "+stats)),
-				widget.NewButton(pin, func() {
+				container.NewHBox(share, widget.NewButton(pin, func() {
 					if d.state.PinEntry == probe.Name {
 						d.patch(map[string]any{"pin_entry": ""})
 					} else {
 						d.patch(map[string]any{"pin_entry": probe.Name})
 					}
-				}),
+				})),
 			))
 		}
 	}
@@ -327,6 +360,7 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 	}
 
 	tabsScroll := container.NewHScroll(container.NewHBox(tabItems...))
+	d.tabsScroll = tabsScroll
 	topBar := container.NewBorder(nil, nil, addSlotBtn, nil, inset(tabsScroll, 0, 0, 8, 0))
 
 	items := []fyne.CanvasObject{topBar}
@@ -351,87 +385,56 @@ func slotTitleLabel(name string) *widget.Label {
 }
 
 func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fyne.CanvasObject {
-	live := "Idle"
+	var live engine.SlotStatus
 	for _, slotStatus := range d.status.Slots {
-		if slotStatus.Name == slot.Name && slotStatus.Tier > 0 {
-			live = fmt.Sprintf("T%d · %s · %s", slotStatus.Tier, slotStatus.Main, milliseconds(slotStatus.Egress))
+		if slotStatus.Name == slot.Name {
+			live = slotStatus
 		}
 	}
-	slotTitle := slotTitleLabel(slot.Name)
-	tipBg := canvas.NewRectangle(colorControl)
-	tipBg.CornerRadius = 3
-	tipText := canvas.NewText("Rename slot", colorMuted)
-	tipText.TextSize = 11
-	tipText.Hide()
-	tipPill := container.NewStack(tipBg, container.NewPadded(tipText))
-	tipPill.Hide()
+	liveText := "Idle"
+	switch {
+	case !slot.Enabled:
+		liveText = "Off"
+	case live.HopOnly: // the main is down; the hop port serves the entry node named in Main
+		liveText = "First hop only · " + live.Main
+	case live.Tier > 0:
+		liveText = fmt.Sprintf("T%d · %s · %s", live.Tier, live.Main, milliseconds(live.Egress))
+	case live.Err != "":
+		liveText = "Down"
+	}
 
-	renameBtn := newTooltipIconButton(theme.DocumentCreateIcon(), func() {
-		d.renameSlot(slotIndex)
-	}, func(hovered bool) {
-		if hovered {
-			tipText.Show()
-			tipPill.Show()
-		} else {
-			tipText.Hide()
-			tipPill.Hide()
-		}
-	})
-
-	sep := canvas.NewText("|", colorMuted)
-	sep.TextSize = 13
-
-	statusStr := "Disabled"
-	statusCol := colorMuted
+	statusLabel := canvas.NewText("Disabled", colorMuted)
 	if slot.Enabled {
-		statusStr = "Enabled"
-		statusCol = colorText
+		statusLabel = canvas.NewText("Enabled", colorText)
 	}
-	statusLabel := canvas.NewText(statusStr, statusCol)
 	statusLabel.TextSize = 13
-
 	enableSlider := newCompactSwitch(slot.Enabled, func(on bool) {
 		if on {
-			statusLabel.Text = "Enabled"
-			statusLabel.Color = colorText
+			statusLabel.Text, statusLabel.Color = "Enabled", colorText
 		} else {
-			statusLabel.Text = "Disabled"
-			statusLabel.Color = colorMuted
+			statusLabel.Text, statusLabel.Color = "Disabled", colorMuted
 		}
 		statusLabel.Refresh()
+		name := slot.Name
 		d.updateSlots(func(slots []store.Slot) {
-			if slotIndex < len(slots) {
-				slots[slotIndex].Enabled = on
+			if index := d.state.SlotIndexByName(name); index >= 0 {
+				slots[index].Enabled = on
 			}
 		})
 	})
-
-	deleteTipBg := canvas.NewRectangle(colorControl)
-	deleteTipBg.CornerRadius = 3
-	deleteTipText := canvas.NewText("Delete slot", colorMuted)
-	deleteTipText.TextSize = 11
-	deleteTipText.Hide()
-	deleteTipPill := container.NewStack(deleteTipBg, container.NewPadded(deleteTipText))
-	deleteTipPill.Hide()
-
-	deleteBtn := newTooltipIconButton(theme.DeleteIcon(), func() {
-		d.removeSlot(slotIndex)
-	}, func(hovered bool) {
-		if hovered {
-			deleteTipText.Show()
-			deleteTipPill.Show()
-		} else {
-			deleteTipText.Hide()
-			deleteTipPill.Hide()
-		}
-	})
-
-	titleLeft := container.NewHBox(slotTitle, renameBtn, tipPill, sep, statusLabel, enableSlider)
-	titleRight := container.NewHBox(deleteTipPill, deleteBtn)
-	titleRow := flexRow(titleLeft, titleRight)
+	sep := canvas.NewText("|", colorMuted)
+	sep.TextSize = 13
+	titleLeft := container.NewHBox(slotTitleLabel(slot.Name),
+		d.iconButton(theme.DocumentCreateIcon(), "Rename slot", func() { d.renameSlot(slotIndex) }),
+		sep, statusLabel, container.NewCenter(enableSlider))
+	titleRow := flexRow(titleLeft, d.iconButton(theme.DeleteIcon(), "Delete slot", func() { d.removeSlot(slotIndex) }))
 
 	isTun := tunSlot != "" && slot.Name == tunSlot
-	slotDetails := fmt.Sprintf("Port %d · %s", slot.Port, live)
+	slotDetails := fmt.Sprintf("Port %d", slot.Port)
+	if hop := d.state.HopPort(slotIndex); hop > 0 {
+		slotDetails += fmt.Sprintf(" · first hop %d", hop)
+	}
+	slotDetails += " · " + liveText
 	if isTun {
 		slotDetails += " · VPN slot"
 	}
@@ -442,63 +445,129 @@ func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fy
 	} else {
 		vpnBtn = widget.NewButton("Use for VPN", func() { d.patch(map[string]any{"tun_slot": slot.Name}) })
 	}
+	exportBtn := widget.NewButtonWithIcon("Export", qrIcon(), func() {
+		links := make([]shareLink, len(slot.Mains))
+		for i, main := range slot.Mains {
+			links[i] = mainShareLink(main)
+		}
+		d.showShare("Export · "+slot.Name, links, 0)
+	})
+	if len(slot.Mains) == 0 {
+		exportBtn.Disable()
+	}
 	rows := []fyne.CanvasObject{
 		titleRow,
 		mutedLine(slotDetails),
-		container.NewHBox(
-			widget.NewButton("Edit port", func() { d.editSlotPort(slotIndex) }),
-			vpnBtn,
-		),
+		container.NewHBox(widget.NewButton("Edit port", func() { d.editSlotPort(slotIndex) }), vpnBtn, exportBtn),
+	}
+	if live.Err != "" && live.Tier == 0 && slot.Enabled {
+		rows = append(rows, wrappingMuted(live.Err))
 	}
 	if len(slot.Mains) == 0 {
 		rows = append(rows, widget.NewSeparator(), muted("No final exits in this slot."))
+	} else {
+		rows = append(rows, widget.NewSeparator(), wrappingMuted("Priority: exits are tried top to bottom. The first working one in the best tier carries traffic; use the arrows to reorder."))
 	}
 	for mainIndex, main := range slot.Mains {
-		slotIndex, mainIndex, main := slotIndex, mainIndex, main
-		exitEnabled := widget.NewCheck("Enabled", func(on bool) {
-			d.updateSlots(func(slots []store.Slot) {
-				if slotIndex < len(slots) && mainIndex < len(slots[slotIndex].Mains) {
-					slots[slotIndex].Mains[mainIndex].Enabled = on
-				}
-			})
-		})
-		exitEnabled.Checked = main.Enabled
-		direct := widget.NewCheck("Allow direct · T1", func(on bool) {
-			d.updateSlots(func(slots []store.Slot) {
-				if slotIndex < len(slots) && mainIndex < len(slots[slotIndex].Mains) {
-					slots[slotIndex].Mains[mainIndex].AllowNoHop = on
-				}
-			})
-		})
-		direct.Checked = main.AllowNoHop
-		rows = append(rows, widget.NewSeparator(), flexRow(
-			container.NewVBox(ellipsized(main.Name), mutedLine(mainHost(main.URL)+" · "+store.ProtoTag(main.URL))),
-			widget.NewButtonWithIcon("", theme.DeleteIcon(), func() { d.removeMain(slotIndex, mainIndex) }),
-		), container.NewHBox(exitEnabled, direct))
+		rows = append(rows, widget.NewSeparator(), d.mainRow(slotIndex, mainIndex, len(slot.Mains), main, live))
 	}
-	rows = append(rows, widget.NewButtonWithIcon("Add final exit", theme.ContentAddIcon(), func() { d.addMain(slotIndex) }))
+	rows = append(rows, widget.NewButtonWithIcon("Add final exits", theme.ContentAddIcon(), func() { d.addMain(slotIndex) }))
 	return panel("", "", rows...)
 }
 
+// mainUsage says which tiers can use an exit, in the cascade's own terms.
+func mainUsage(main store.Main) (text string, usable bool) {
+	switch {
+	case !main.Enabled:
+		return "disabled", false
+	case store.IsVision(main.URL) && !main.AllowNoHop:
+		return "never used: Vision exits only work direct, allow T1", false
+	case store.IsVision(main.URL):
+		return "direct only (T1)", true
+	case main.AllowNoHop:
+		return "direct (T1) or via a hop (T2/T3)", true
+	}
+	return "via a hop only (T2/T3)", true
+}
+
+func (d *dashboard) mainRow(slotIndex, mainIndex, count int, main store.Main, live engine.SlotStatus) fyne.CanvasObject {
+	active := live.Tier > 0 && !live.HopOnly && live.Main == main.Name
+	usage, usable := mainUsage(main)
+
+	badgeColor := colorControl
+	if active {
+		badgeColor = colorAccent
+	}
+	badgeBg := canvas.NewRectangle(badgeColor)
+	badgeBg.CornerRadius = 11
+	number := canvas.NewText(strconv.Itoa(mainIndex+1), colorText)
+	if active {
+		number.Color = colorBackground
+	}
+	number.TextSize = 12
+	number.TextStyle = fyne.TextStyle{Bold: true}
+	badge := container.NewCenter(container.NewGridWrap(fyne.NewSize(22, 22), container.NewStack(badgeBg, container.NewCenter(number))))
+
+	title := ellipsized(main.Name)
+	title.TextStyle = fyne.TextStyle{Bold: active}
+	meta := mainHost(main.URL) + " · " + store.ProtoTag(main.URL)
+	if active {
+		meta = fmt.Sprintf("In use · T%d · %s", live.Tier, milliseconds(live.Egress)) + " · " + meta
+	}
+	info := container.NewVBox(title, mutedLine(meta))
+
+	up := d.iconButton(theme.MoveUpIcon(), "Raise priority", func() { d.moveMain(slotIndex, mainIndex, -1) })
+	up.Disabled = mainIndex == 0
+	down := d.iconButton(theme.MoveDownIcon(), "Lower priority", func() { d.moveMain(slotIndex, mainIndex, 1) })
+	down.Disabled = mainIndex == count-1
+	actions := container.NewHBox(up, down,
+		d.iconButton(qrIcon(), "Share link / QR code", func() {
+			d.showShare("Share exit", []shareLink{mainShareLink(main)}, 0)
+		}),
+		d.iconButton(theme.DocumentCreateIcon(), "Rename exit", func() { d.renameMain(slotIndex, mainIndex) }),
+		d.iconButton(theme.DeleteIcon(), "Delete exit", func() { d.removeMain(slotIndex, mainIndex) }),
+	)
+
+	exitEnabled := widget.NewCheck("Enabled", func(on bool) {
+		d.setMainFlag(slotIndex, mainIndex, func(m *store.Main) { m.Enabled = on })
+	})
+	exitEnabled.Checked = main.Enabled
+	direct := widget.NewCheck("Allow direct · T1", func(on bool) {
+		d.setMainFlag(slotIndex, mainIndex, func(m *store.Main) { m.AllowNoHop = on })
+	})
+	direct.Checked = main.AllowNoHop
+	usageText := canvas.NewText(usage, colorMuted)
+	if !usable && main.Enabled {
+		usageText.Color = colorDanger
+	}
+	usageText.TextSize = 11
+	toggles := container.NewHBox(exitEnabled, direct, container.NewCenter(usageText))
+
+	head := container.NewBorder(nil, nil, inset(badge, 0, 0, 0, 6), nil, info)
+	return container.NewVBox(flexRow(head, actions), toggles)
+}
+
 func (d *dashboard) editSlotPort(slotIndex int) {
-	current := d.state.Slots[slotIndex].Port
+	if d.state == nil || slotIndex < 0 || slotIndex >= len(d.state.Slots) {
+		return
+	}
+	name, current := d.state.Slots[slotIndex].Name, d.state.Slots[slotIndex].Port
 	d.ask("Edit slot port", "SOCKS5 port (next port serves the first hop)", strconv.Itoa(current), "Save", func(value string) {
 		port, err := strconv.Atoi(value)
 		if err != nil || port < 1024 || port > 65534 {
 			d.notify("Port must be between 1024 and 65534 (the next port serves the first hop)")
 			return
 		}
-		for index, slot := range d.state.Slots {
-			if index != slotIndex && (slot.Port == port || slot.Port == port+1 || slot.Port+1 == port) {
-				d.notify("This port or its first-hop port is already used")
-				return
-			}
+		index := d.state.SlotIndexByName(name)
+		if index < 0 {
+			d.notify("This slot was removed while editing")
+			return
 		}
-		d.updateSlots(func(slots []store.Slot) {
-			if slotIndex < len(slots) {
-				slots[slotIndex].Port = port
-			}
-		})
+		if d.state.SlotPortConflict(index, port) {
+			d.notify("This port or its first-hop port is already used by another slot")
+			return
+		}
+		d.updateSlots(func(slots []store.Slot) { slots[index].Port = port })
 	})
 }
 
@@ -512,9 +581,15 @@ func (d *dashboard) removeSlot(slotIndex int) {
 		data, _ := json.Marshal(d.state.Slots)
 		var slots []store.Slot
 		_ = json.Unmarshal(data, &slots)
-		if slotIndex >= len(slots) || slots[slotIndex].Name != name {
-			return // another client changed the slots while this dialog was open
+		index := d.state.SlotIndexByName(name)
+		if index < 0 {
+			return // another client removed it while this dialog was open
 		}
+		if len(slots) <= 1 {
+			d.notify("The last slot cannot be removed")
+			return
+		}
+		slotIndex := index
 		slots = append(slots[:slotIndex], slots[slotIndex+1:]...)
 		if d.selectedSlot == name {
 			if slotIndex > 0 && slotIndex-1 < len(slots) {
@@ -567,7 +642,7 @@ func (d *dashboard) activityView() fyne.CanvasObject {
 		},
 	)
 	list.OnSelected = func(id widget.ListItemID) {
-		d.window.Clipboard().SetContent(visible[id].String())
+		d.app.Clipboard().SetContent(visible[id].String())
 		d.notify("Log record copied")
 		list.Unselect(id)
 	}
@@ -622,12 +697,19 @@ func (d *dashboard) activityView() fyne.CanvasObject {
 		levels.Add(check)
 	}
 	clear := widget.NewButton("Clear", func() { d.logs = nil; refresh() })
+	follow := widget.NewCheck("Follow new records", func(on bool) {
+		d.pauseLog = !on
+		if on {
+			list.ScrollToBottom()
+		}
+	})
+	follow.Checked = !d.pauseLog
 	refresh()
 	return container.NewVBox(
 		panel("Filters", "Severity, module, and text filters update instantly",
 			presets, levels, query, module,
 		),
-		panel("Activity", "Newest records are at the bottom", summary, container.New(&activityListLayout{}, list), clear),
+		panel("Activity", "Newest records are at the bottom", summary, container.New(&activityListLayout{}, list), container.NewHBox(clear, follow)),
 	)
 }
 
@@ -641,4 +723,13 @@ func (*activityListLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 
 func (*activityListLayout) MinSize([]fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(320, 300)
+}
+
+// connectHost is the address a local app dials for a listener bound to host:
+// a wildcard bind is reachable on loopback, and dialing 0.0.0.0 fails on Windows.
+func connectHost(host string) string {
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		return "127.0.0.1"
+	}
+	return host
 }

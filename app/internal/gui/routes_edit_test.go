@@ -704,36 +704,24 @@ func TestRenameIconButtonAndTooltip(t *testing.T) {
 	// Verify tooltip icon button exists
 	renameBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
 		btn, ok := obj.(*tooltipIconButton)
-		return ok && btn.Icon == theme.DocumentCreateIcon()
+		return ok && btn.Hint == "Rename slot"
 	})
 	if len(renameBtns) != 1 {
 		t.Fatalf("expected 1 rename tooltipIconButton, got %d", len(renameBtns))
 	}
 	iconBtn := renameBtns[0].(*tooltipIconButton)
 
-	// Verify tooltip text object exists
-	tipTexts := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
-		txt, ok := obj.(*canvas.Text)
-		return ok && txt.Text == "Rename slot"
-	})
-	if len(tipTexts) != 1 {
-		t.Fatalf("expected 1 'Rename slot' text object, got %d", len(tipTexts))
+	// The hint floats in the shared tooltip layer, hidden until hovered.
+	if d.tips.pill.Visible() {
+		t.Fatal("expected tooltip to be initially hidden")
 	}
-	tipText := tipTexts[0].(*canvas.Text)
-	if tipText.Visible() {
-		t.Fatal("expected tooltip text to be initially hidden")
-	}
-
-	// Test hover in
 	iconBtn.MouseIn(nil)
-	if !tipText.Visible() {
-		t.Fatal("expected tooltip text to be visible on MouseIn")
+	if !d.tips.pill.Visible() || d.tips.text.Text != "Rename slot" {
+		t.Fatalf("expected %q tooltip on MouseIn, got visible=%v text=%q", "Rename slot", d.tips.pill.Visible(), d.tips.text.Text)
 	}
-
-	// Test hover out
 	iconBtn.MouseOut()
-	if tipText.Visible() {
-		t.Fatal("expected tooltip text to be hidden on MouseOut")
+	if d.tips.pill.Visible() {
+		t.Fatal("expected tooltip to be hidden on MouseOut")
 	}
 
 	// Test tap on icon button triggers rename dialog
@@ -761,36 +749,24 @@ func TestSlotDeleteIconButtonAndTooltip(t *testing.T) {
 	// Verify delete tooltip icon button exists
 	delBtns := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
 		btn, ok := obj.(*tooltipIconButton)
-		return ok && btn.Icon == theme.DeleteIcon()
+		return ok && btn.Hint == "Delete slot"
 	})
 	if len(delBtns) != 1 {
 		t.Fatalf("expected 1 delete tooltipIconButton, got %d", len(delBtns))
 	}
 	iconBtn := delBtns[0].(*tooltipIconButton)
 
-	// Verify tooltip text object exists
-	tipTexts := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
-		txt, ok := obj.(*canvas.Text)
-		return ok && txt.Text == "Delete slot"
-	})
-	if len(tipTexts) != 1 {
-		t.Fatalf("expected 1 'Delete slot' text object, got %d", len(tipTexts))
+	// The hint floats in the shared tooltip layer, hidden until hovered.
+	if d.tips.pill.Visible() {
+		t.Fatal("expected tooltip to be initially hidden")
 	}
-	tipText := tipTexts[0].(*canvas.Text)
-	if tipText.Visible() {
-		t.Fatal("expected tooltip text to be initially hidden")
-	}
-
-	// Test hover in
 	iconBtn.MouseIn(nil)
-	if !tipText.Visible() {
-		t.Fatal("expected tooltip text to be visible on MouseIn")
+	if !d.tips.pill.Visible() || d.tips.text.Text != "Delete slot" {
+		t.Fatalf("expected %q tooltip on MouseIn, got visible=%v text=%q", "Delete slot", d.tips.pill.Visible(), d.tips.text.Text)
 	}
-
-	// Test hover out
 	iconBtn.MouseOut()
-	if tipText.Visible() {
-		t.Fatal("expected tooltip text to be hidden on MouseOut")
+	if d.tips.pill.Visible() {
+		t.Fatal("expected tooltip to be hidden on MouseOut")
 	}
 
 	// Test tap on delete icon button triggers confirm dialog
@@ -879,4 +855,3 @@ func TestSlotTitleDisplaysFullName(t *testing.T) {
 		t.Fatalf("expected title label width >= 40px, got %.2f (would render as '...')", titleLabel.Size().Width)
 	}
 }
-

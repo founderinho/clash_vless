@@ -4,6 +4,7 @@
 package store
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -100,6 +101,31 @@ func (sl *Slot) AddMain(u string) {
 	sl.Mains = append(sl.Mains, Main{Name: mainName(u), URL: u, Enabled: true, AllowNoHop: IsVision(u) || IsReality(u)})
 }
 
+// MainIndex returns the index of the main with the given URL, or -1.
+func (sl *Slot) MainIndex(u string) int {
+	for i := range sl.Mains {
+		if sl.Mains[i].URL == u {
+			return i
+		}
+	}
+	return -1
+}
+
+// HasMain reports whether the slot already holds a main with this URL.
+func (sl *Slot) HasMain(u string) bool { return sl.MainIndex(u) >= 0 }
+
+// MoveMain moves the main at from to position to. Order is priority: within a
+// tier the cascade tries mains top to bottom.
+func (sl *Slot) MoveMain(from, to int) bool {
+	if from < 0 || from >= len(sl.Mains) || to < 0 || to >= len(sl.Mains) || from == to {
+		return false
+	}
+	m := sl.Mains[from]
+	sl.Mains = append(sl.Mains[:from], sl.Mains[from+1:]...)
+	sl.Mains = append(sl.Mains[:to], append([]Main{m}, sl.Mains[to:]...)...)
+	return true
+}
+
 // RemoveMain deletes the main at index i within the slot.
 func (sl *Slot) RemoveMain(i int) {
 	if i < 0 || i >= len(sl.Mains) {
@@ -188,7 +214,7 @@ type State struct {
 const DefaultUA = "Happ/3.13.0"
 
 // Version is the app version, shown in the TUI header and `version` command.
-const Version = "0.30.2"
+const Version = "0.31.0"
 
 func Dir() (string, error) {
 	base, err := os.UserConfigDir()
@@ -231,6 +257,7 @@ func Load(path string) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")) // a BOM from a Windows editor
 	if err := json.Unmarshal(data, s); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
@@ -602,6 +629,65 @@ func (s *State) FreeSlotPort() int {
 	return 0
 }
 
+// HopPort is the local port slot i exposes its first hop on (0 = none): its
+// Port+1, or the EntryPort override for the default (first) slot.
+func (s *State) HopPort(i int) int {
+	if i < 0 || i >= len(s.Slots) {
+		return 0
+	}
+	sl := s.Slots[i]
+	if i == 0 && s.EntryPort > 0 {
+		if s.EntryPort != sl.Port {
+			return s.EntryPort
+		}
+		return 0
+	}
+	if sl.Port > 0 {
+		return sl.Port + 1
+	}
+	return 0
+}
+
+// SlotPortConflict reports whether moving slot i to port would collide with
+// another slot's SOCKS or first-hop port (either of its own two ports).
+func (s *State) SlotPortConflict(i, port int) bool {
+	used := map[int]bool{}
+	for j := range s.Slots {
+		if j == i {
+			continue
+		}
+		used[s.Slots[j].Port] = true
+		if hop := s.HopPort(j); hop > 0 {
+			used[hop] = true
+		}
+	}
+	hop := port + 1
+	if i == 0 && s.EntryPort > 0 {
+		hop = s.EntryPort
+		if hop == port {
+			hop = 0
+		}
+	}
+	return used[port] || (hop > 0 && used[hop])
+}
+
+// EntryPortConflict reports whether the default slot's first-hop override would
+// collide with a served port (0 = auto never does).
+func (s *State) EntryPortConflict(port int) bool {
+	if port == 0 || len(s.Slots) == 0 {
+		return false
+	}
+	if s.Slots[0].Port == port {
+		return true
+	}
+	for j := 1; j < len(s.Slots); j++ {
+		if s.Slots[j].Port == port || s.HopPort(j) == port {
+			return true
+		}
+	}
+	return false
+}
+
 // AnyUsableMain reports whether any enabled slot has at least one enabled main.
 func (s *State) AnyUsableMain() bool {
 	for i := range s.Slots {
@@ -697,10 +783,7 @@ func OutboundProtoTag(ob json.RawMessage) string {
 // mainName derives a readable label for a main from its URL fragment or host.
 func mainName(u string) string {
 	if p, err := url.Parse(u); err == nil {
-		if f := strings.TrimSpace(p.Fragment); f != "" {
-			if dec, e := url.QueryUnescape(f); e == nil {
-				return strings.TrimSpace(dec)
-			}
+		if f := strings.TrimSpace(p.Fragment); f != "" { // url.Parse already decoded it
 			return f
 		}
 		if p.Host != "" {
@@ -727,6 +810,9 @@ func (s *State) RemoveSub(i int) {
 		return
 	}
 	s.Subs = append(s.Subs[:i], s.Subs[i+1:]...)
+	if i < s.ActiveSub {
+		s.ActiveSub--
+	}
 	if s.ActiveSub >= len(s.Subs) {
 		s.ActiveSub = len(s.Subs) - 1
 	}

@@ -1,6 +1,10 @@
 package engine
 
-import "testing"
+import (
+	"sort"
+	"testing"
+	"time"
+)
 
 func TestMeanSpeed(t *testing.T) {
 	s := &Supervisor{}
@@ -53,5 +57,25 @@ func TestFlakinessAndStabilityBucket(t *testing.T) {
 	}
 	if b := s.stabilityBucket("solid"); b != 0 {
 		t.Fatalf("stabilityBucket(solid) = %d, want 0", b)
+	}
+}
+
+func TestRankKeyOrderIsTransitive(t *testing.T) {
+	a := rankKey{ok: true, measured: true, speed: 10, lat: 50 * time.Millisecond}
+	b := rankKey{ok: true, lat: 100 * time.Millisecond}
+	c := rankKey{ok: true, measured: true, speed: 20, lat: 150 * time.Millisecond}
+	keys := []rankKey{a, b, c}
+	for _, order := range [][]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+		items := []rankKey{keys[order[0]], keys[order[1]], keys[order[2]]}
+		sort.SliceStable(items, func(i, j int) bool { return items[i].less(items[j]) })
+		if items[0] != c || items[1] != a || items[2] != b {
+			t.Fatalf("input order %v sorted to %+v", order, items)
+		}
+	}
+	if !(rankKey{ok: true, bucket: 0, lat: time.Second}).less(rankKey{ok: true, bucket: 1, measured: true, speed: 99}) {
+		t.Error("a steadier band must win over speed")
+	}
+	if (rankKey{ok: false, measured: true, speed: 99}).less(rankKey{ok: true}) {
+		t.Error("an unreachable node must rank last")
 	}
 }

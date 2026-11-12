@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -129,6 +130,7 @@ type Supervisor struct {
 	tunErrMsg      string
 	tunMark        int32             // xray's off-tun socket mark (cached for the gateway-change re-point)
 	tunHosts       map[string]string // exit domain→IP map (cached so the re-point re-decorates without DNS)
+	tunServerSig   string            // the server hosts tunHosts and the bypass were built from
 	tunSlotName    string            // the slot the relay currently targets (for live re-point)
 	tunDevName     string            // the device name the bridge created
 }
@@ -151,7 +153,11 @@ type slotRunner struct {
 	liveTier  int
 	liveEntry string
 	liveMain  string
+	liveOB    json.RawMessage // the live main's outbound, to recognise it after edits
 	ss        SlotStatus
+
+	mainsSig string // the slot's eligible mains as of the last cycle
+	haveSig  bool
 
 	// hysteresis counters — only touched from this runner's goroutine.
 	upStreak    int
@@ -164,6 +170,7 @@ type plan struct {
 	tier    int
 	entry   *store.Node
 	main    string
+	mainOB  json.RawMessage
 	config  []byte
 	egress  time.Duration
 	key     string
@@ -352,7 +359,7 @@ func (s *Supervisor) syncRunners(ctx context.Context) {
 	for i := range s.st.Slots {
 		sl := &s.st.Slots[i]
 		if sl.Enabled && sl.Port > 0 {
-			desired[sl.Name] = want{port: sl.Port, entry: s.slotEntryPortLocked(sl)}
+			desired[sl.Name] = want{port: sl.Port, entry: s.st.HopPort(i)}
 		}
 	}
 	s.mu.Unlock()
@@ -380,24 +387,6 @@ func (s *Supervisor) syncRunners(ctx context.Context) {
 	if changed {
 		s.publish()
 	}
-}
-
-// slotEntryPortLocked returns the local port a slot exposes its first hop on
-// while chained. Every slot exposes its first hop on its own port + 1 by
-// default; the default (first) slot honors the explicit global First-hop port
-// override (EntryPort) instead. Slot ports are spaced two apart (freeSlotPort /
-// applyDefaults reserve Port+1) so these never collide. Call with s.mu held.
-func (s *Supervisor) slotEntryPortLocked(sl *store.Slot) int {
-	if len(s.st.Slots) > 0 && s.st.Slots[0].Name == sl.Name && s.st.EntryPort > 0 {
-		if s.st.EntryPort != sl.Port {
-			return s.st.EntryPort
-		}
-		return 0
-	}
-	if sl.Port > 0 {
-		return sl.Port + 1
-	}
-	return 0
 }
 
 // stopAllRunners cancels every runner (each closes its live instance on exit).
@@ -736,7 +725,11 @@ func (r *slotRunner) cycle(ctx context.Context) {
 
 	directOB := r.sup.namedOutbounds(directMains)
 	hopOB := r.sup.namedOutbounds(hopMains)
+	sig := mainsSignature(directOB, hopOB)
+	mainsChanged := r.haveSig && sig != r.mainsSig
+	r.mainsSig, r.haveSig = sig, true
 	if len(directOB) == 0 && len(hopOB) == 0 {
+		r.stopLive() // a removed or disabled exit must not keep carrying traffic
 		r.emit(0, "", 0, "no usable main — add/enable one in this slot", "")
 		return
 	}
@@ -751,12 +744,17 @@ func (r *slotRunner) cycle(ctx context.Context) {
 
 	r.mu.Lock()
 	curTier, curEntry, hasLive := r.liveTier, r.liveEntry, r.live != nil
+	liveOB, servingHopOnly, liveKey := r.liveOB, r.hopOnly, r.liveKey
 	r.mu.Unlock()
+
+	// The live main must still be allowed at its tier: deleting, disabling or
+	// demoting it, or a tier pin / force-hop that excludes its tier, retires it now.
+	stale := hasLive && !servingHopOnly && !(curTier >= lo && curTier <= hi && r.followLiveMain(liveOB, curTier, directOB, hopOB))
 
 	// Is the current live chain still reaching the internet?
 	var liveLat time.Duration
 	healthy := false
-	if hasLive {
+	if hasLive && !stale {
 		if lat, e := EgressThroughSOCKS(ctx, r.mainPort, r.sup.timeout()); e == nil {
 			healthy, liveLat = true, lat
 		}
@@ -764,6 +762,23 @@ func (r *slotRunner) cycle(ctx context.Context) {
 
 	if hasLive && healthy {
 		r.failStreak = 0
+
+		// An edit to the slot's exits (e.g. a new priority order) applies now
+		// instead of waiting for the live chain to fail. The same main on the same
+		// tier stays put, so its entry isn't churned.
+		if mainsChanged {
+			if best, ok := r.bestWorking(ctx, directOB, hopOB, lo, hi); ok && (best.tier != curTier || !bytes.Equal(best.mainOB, liveOB)) {
+				if e := r.apply(best); e != nil {
+					r.applyFailed(best, e)
+					return
+				}
+				r.upStreak = 0
+				r.liveBySpeed = r.speedBacked(best)
+				r.logf("→ %s  egress %dms (exits changed)", best.key, best.egress.Milliseconds())
+				r.emitPlan(best, "exits changed — re-selected by priority")
+				return
+			}
+		}
 
 		// One-time throughput upgrade: a pick made ping-only (cold start, before any
 		// speedtest) swaps to the best-throughput entry in its tier the moment speed
@@ -776,14 +791,16 @@ func (r *slotRunner) cycle(ctx context.Context) {
 						bestSpd, _ = r.sup.meanSpeed(best.entry.Name)
 					}
 					curSpd, _ := r.sup.meanSpeed(curEntry)
-					if best.entry != nil && best.key != r.liveKey && bestSpd > curSpd && r.apply(best) == nil {
-						r.liveBySpeed = true
-						spd, _ := r.sup.meanSpeed(best.entry.Name)
-						r.logf("⚡ upgraded to best-speed %s (%.0f Mbps)", best.entry.Name, spd)
+					r.liveBySpeed = true // swap at most once; the current entry may already be best
+					if best.entry != nil && best.key != liveKey && bestSpd > curSpd {
+						if e := r.apply(best); e != nil {
+							r.applyFailed(best, e)
+							return
+						}
+						r.logf("⚡ upgraded to best-speed %s (%.0f Mbps)", best.entry.Name, bestSpd)
 						r.emitPlan(best, "⚡ upgraded to best throughput")
 						return
 					}
-					r.liveBySpeed = true // current entry already the best, or swap failed → lock, don't re-probe
 				}
 			}
 		}
@@ -793,13 +810,16 @@ func (r *slotRunner) cycle(ctx context.Context) {
 			if up, ok := r.bestWorking(ctx, directOB, hopOB, lo, curTier-1); ok {
 				r.upStreak++
 				if r.upStreak >= r.sup.upThresh() {
-					if r.apply(up) == nil {
+					if e := r.apply(up); e != nil {
 						r.upStreak = 0
-						r.liveBySpeed = r.speedBacked(up)
-						r.logf("↑ recovered → %s  egress %dms", up.key, up.egress.Milliseconds())
-						r.emitPlan(up, "↑ recovered to a better tier")
+						r.applyFailed(up, e)
 						return
 					}
+					r.upStreak = 0
+					r.liveBySpeed = r.speedBacked(up)
+					r.logf("↑ recovered → %s  egress %dms", up.key, up.egress.Milliseconds())
+					r.emitPlan(up, "↑ recovered to a better tier")
+					return
 				}
 				r.logf("↑ %s available (%d/%d)", up.key, r.upStreak, r.sup.upThresh())
 				r.emit(curTier, curEntry, liveLat, "", fmt.Sprintf("↑ %s available (%d/%d)", up.key, r.upStreak, r.sup.upThresh()))
@@ -811,18 +831,16 @@ func (r *slotRunner) cycle(ctx context.Context) {
 		return
 	}
 
-	// Current chain is down (or nothing running yet).
+	// Current chain is down, retired by an edit, or nothing is running yet.
 	r.upStreak = 0
+	if stale {
+		r.logf("current exit is no longer allowed by this slot's settings — re-selecting")
+	}
 
 	// An entry-only fallback (main down, first hop still serving) is not a live
 	// MAIN chain, so it gets no blip tolerance — we immediately re-attempt a full
 	// chain. A real live chain tolerates DownThreshold failures before switching.
-	r.mu.Lock()
-	servingHopOnly := r.hopOnly
-	liveKey := r.liveKey
-	r.mu.Unlock()
-
-	if hasLive && !servingHopOnly {
+	if hasLive && !servingHopOnly && !stale {
 		r.failStreak++
 		if r.failStreak < r.sup.downThresh() {
 			// Tolerate a transient blip before switching away.
@@ -834,8 +852,7 @@ func (r *slotRunner) cycle(ctx context.Context) {
 
 	if best, ok := r.bestWorking(ctx, directOB, hopOB, lo, hi); ok {
 		if e := r.apply(best); e != nil {
-			r.errorf("apply %s failed: %v", best.key, e)
-			r.emit(0, "", 0, e.Error(), "")
+			r.applyFailed(best, e)
 			return
 		}
 		r.failStreak = 0
@@ -843,6 +860,10 @@ func (r *slotRunner) cycle(ctx context.Context) {
 		r.logf("→ %s  egress %dms", best.key, best.egress.Milliseconds())
 		r.emitPlan(best, "")
 		return
+	}
+	if stale {
+		r.stopLive()
+		liveKey = ""
 	}
 
 	// No main exit works via any tier. Keep the first-hop port usable anyway:
@@ -854,6 +875,47 @@ func (r *slotRunner) cycle(ctx context.Context) {
 
 	r.logf("✖ all tiers unreachable")
 	r.emit(0, "", 0, "no main reachable — direct nor via any hop", "")
+}
+
+// followLiveMain reports whether the live main is still a candidate for its
+// tier. A renamed main keeps serving under its new name.
+func (r *slotRunner) followLiveMain(ob json.RawMessage, tier int, directOB, hopOB []namedOB) bool {
+	candidates := hopOB
+	if tier == 1 {
+		candidates = directOB
+	}
+	for _, m := range candidates {
+		if bytes.Equal(m.ob, ob) {
+			r.mu.Lock()
+			r.liveMain = m.name
+			r.mu.Unlock()
+			return true
+		}
+	}
+	return false
+}
+
+// applyFailed reports a swap whose new instance didn't start. apply already
+// closed the old one, so the slot is down until the next cycle rebuilds it.
+func (r *slotRunner) applyFailed(p plan, err error) {
+	r.errorf("apply %s failed: %v", p.key, err)
+	r.emit(0, "", 0, err.Error(), "")
+}
+
+// mainsSignature captures which mains are eligible per tier, in priority order.
+func mainsSignature(directOB, hopOB []namedOB) string {
+	var b strings.Builder
+	for _, m := range directOB {
+		b.WriteString("d")
+		b.Write(m.ob)
+		b.WriteByte(0)
+	}
+	for _, m := range hopOB {
+		b.WriteString("h")
+		b.Write(m.ob)
+		b.WriteByte(0)
+	}
+	return b.String()
 }
 
 const hopOnlyKeyPrefix = "HOP:"
@@ -932,7 +994,7 @@ func (r *slotRunner) pinnedCycle(ctx context.Context, hopOB []namedOB, pin strin
 	if node.Whitelist {
 		tier = 3
 	}
-	wantKey := "PIN:" + node.Name
+	wantKey := "PIN:" + node.Name + ":" + m.name // the top-priority hop main, so a reorder rebuilds
 
 	// Already serving this exact pin? Trust the live socket; re-probe it warm.
 	r.mu.Lock()
@@ -998,7 +1060,7 @@ func (r *slotRunner) pinnedCycle(ctx context.Context, hopOB []namedOB, pin strin
 		r.emit(0, "", 0, err.Error(), "")
 		return
 	}
-	p := plan{tier: tier, entry: &node, main: m.name, config: cfg, egress: lat, key: wantKey}
+	p := plan{tier: tier, entry: &node, main: m.name, mainOB: m.ob, config: cfg, egress: lat, key: wantKey}
 	if e := r.apply(p); e != nil {
 		r.emit(0, "", 0, e.Error(), "")
 		return
@@ -1071,7 +1133,7 @@ func (r *slotRunner) probeTier(ctx context.Context, directOB, hopOB []namedOB, t
 				if err != nil {
 					continue
 				}
-				return plan{tier: 1, main: m.name, config: cfg, egress: lat, key: "T1:" + m.name}, true
+				return plan{tier: 1, main: m.name, mainOB: m.ob, config: cfg, egress: lat, key: "T1:" + m.name}, true
 			}
 		}
 		return plan{}, false
@@ -1093,7 +1155,7 @@ func (r *slotRunner) probeTier(ctx context.Context, directOB, hopOB []namedOB, t
 				if err != nil {
 					continue
 				}
-				return plan{tier: tier, entry: n, main: m.name, config: cfg, egress: lat, key: fmt.Sprintf("T%d:%s:%s", tier, m.name, n.Name)}, true
+				return plan{tier: tier, entry: n, main: m.name, mainOB: m.ob, config: cfg, egress: lat, key: fmt.Sprintf("T%d:%s:%s", tier, m.name, n.Name)}, true
 			}
 		}
 	}
@@ -1246,20 +1308,13 @@ func (s *Supervisor) rankPool(ctx context.Context, whitelist bool, sem chan stru
 
 	// Leader order: reachable first, then steadiest (stability band), then FASTEST by
 	// mean throughput — ping is only the tiebreak when speed isn't measured for both.
-	sort.SliceStable(results, func(a, b int) bool {
-		if results[a].ok != results[b].ok {
-			return results[a].ok
-		}
-		if ba, bb := s.stabilityBucket(results[a].n.Name), s.stabilityBucket(results[b].n.Name); ba != bb {
-			return ba < bb
-		}
-		if sa, na := s.meanSpeed(results[a].n.Name); na > 0 {
-			if sb, nb := s.meanSpeed(results[b].n.Name); nb > 0 && sa != sb {
-				return sa > sb // both measured → higher mean speed wins
-			}
-		}
-		return results[a].lat < results[b].lat // else fall back to lowest ping
-	})
+	// Keys are read once so concurrent probes can't change them mid-sort.
+	keys := make(map[*store.Node]rankKey, len(results))
+	for _, r := range results {
+		spd, n := s.meanSpeed(r.n.Name)
+		keys[r.n] = rankKey{ok: r.ok, bucket: s.stabilityBucket(r.n.Name), measured: n > 0, speed: spd, lat: r.lat}
+	}
+	sort.SliceStable(results, func(a, b int) bool { return keys[results[a].n].less(keys[results[b].n]) })
 	var out []*store.Node
 	for _, r := range results {
 		if r.ok {
@@ -1267,6 +1322,34 @@ func (s *Supervisor) rankPool(ctx context.Context, whitelist bool, sem chan stru
 		}
 	}
 	return out
+}
+
+type rankKey struct {
+	ok       bool
+	bucket   int
+	measured bool
+	speed    float64
+	lat      time.Duration
+}
+
+// less orders entries for leadership. Within a stability band, nodes with a
+// measured speed come first, ranked by speed; the rest by ping. Comparing speed
+// only when both sides have it would not be transitive, so a slow measured node
+// could end up ahead of a fast one depending on input order.
+func (a rankKey) less(b rankKey) bool {
+	if a.ok != b.ok {
+		return a.ok
+	}
+	if a.bucket != b.bucket {
+		return a.bucket < b.bucket
+	}
+	if a.measured != b.measured {
+		return a.measured
+	}
+	if a.measured && a.speed != b.speed {
+		return a.speed > b.speed
+	}
+	return a.lat < b.lat
 }
 
 // probe spins a throwaway xray on the probe port for a candidate (entry nil =
@@ -1326,7 +1409,7 @@ func (r *slotRunner) apply(p plan) error {
 		entry = p.entry.Name
 	}
 	r.mu.Lock()
-	r.live, r.liveKey, r.liveTier, r.liveEntry, r.liveMain = inst, p.key, p.tier, entry, p.main
+	r.live, r.liveKey, r.liveTier, r.liveEntry, r.liveMain, r.liveOB = inst, p.key, p.tier, entry, p.main, p.mainOB
 	r.hopOnly = p.hopOnly
 	r.mu.Unlock()
 	return nil
@@ -1335,7 +1418,7 @@ func (r *slotRunner) apply(p plan) error {
 func (r *slotRunner) stopLive() {
 	r.mu.Lock()
 	old := r.live
-	r.live, r.liveKey, r.liveTier, r.liveEntry, r.liveMain = nil, "", 0, "", ""
+	r.live, r.liveKey, r.liveTier, r.liveEntry, r.liveMain, r.liveOB = nil, "", 0, "", "", nil
 	r.hopOnly = false
 	r.mu.Unlock()
 	if old != nil {
@@ -1476,8 +1559,25 @@ func (s *Supervisor) syncTun(ctx context.Context) {
 			}
 		} else {
 			s.tunReassert(ctx)
+			s.tunRefreshServers()
 		}
 	}
+}
+
+// tunRefreshServers follows exits and nodes added or removed while TUN is up, so
+// a new server gets its bypass route (Windows/macOS) and static hosts entry and
+// probing it doesn't depend on the very exit it may have to replace.
+func (s *Supervisor) tunRefreshServers() {
+	hosts := s.tunServerHosts()
+	sig := strings.Join(hosts, "\n")
+	if sig == s.tunServerSig {
+		return
+	}
+	ips, hostMap := s.resolveServers(hosts, s.tunHosts)
+	s.tunServerSig, s.tunHosts = sig, hostMap
+	s.tunMgr.SetServerIPs(ips)
+	xray.SetTunMode(s.tunMark, tun.UplinkDevice(), hostMap)
+	s.logf("TUN: server list changed — %d host(s) kept off the tunnel", len(hosts))
 }
 
 // tunReassert keeps TUN routing correct against network events while it's up, so
@@ -1649,7 +1749,8 @@ func (s *Supervisor) tunUp(ctx context.Context, tunSlot string, slotPort int) er
 	// Resolve every slot's server host on the real network (before the tunnel
 	// captures the default route): IPs for the Windows/macOS bypass list, and a
 	// domain→IP map for static hosts (so an exit's own domain resolves locally).
-	ips, hosts := s.tunResolveAll()
+	srvHosts := s.tunServerHosts()
+	ips, hosts := s.resolveServers(srvHosts, nil) // real network — the tunnel isn't up yet
 	mark := tun.FwMark()
 	dev := tun.UplinkDevice()
 	bypassLAN := s.cfgBool(func(st *store.State) bool { return st.TunBypassLAN() })
@@ -1673,6 +1774,7 @@ func (s *Supervisor) tunUp(ctx context.Context, tunSlot string, slotPort int) er
 	// fwmark (Docker/firewalld), where marked packets would loop back into the tun.
 	xray.SetTunMode(mark, dev, hosts)
 	s.tunMark, s.tunHosts = mark, hosts // cached for the gateway-change re-point (no re-resolve)
+	s.tunServerSig = strings.Join(srvHosts, "\n")
 
 	// Create the device once (never recreated in-process), then point the relay at
 	// the selected slot's port.
@@ -1786,38 +1888,48 @@ func (s *Supervisor) tunShutdown() {
 	}
 }
 
-// tunResolveAll resolves every configured main + node server host on the real
-// network (before the tunnel captures the default route). Returns the IPs to
-// keep off the tunnel (the Windows/macOS bypass list — Linux uses fwmark) and a
-// domain→IP map for the live config's static hosts (so an exit's own domain
-// resolves locally instead of looping through the tunnel it bootstraps).
-func (s *Supervisor) tunResolveAll() (ips []net.IP, hosts map[string]string) {
+// tunServerHosts lists every slot's exit host and every active node's server,
+// sorted and unique.
+func (s *Supervisor) tunServerHosts() []string {
 	s.mu.Lock()
-	var srvHosts []string
+	var hosts []string
 	for i := range s.st.Slots { // every slot's exit must resolve/bypass off-tun
 		for _, m := range s.st.Slots[i].Mains {
-			srvHosts = append(srvHosts, hostOf(m.URL))
+			hosts = append(hosts, hostOf(m.URL))
 		}
 	}
 	for _, n := range s.st.ActiveNodes() {
-		srvHosts = append(srvHosts, n.Server)
+		hosts = append(hosts, n.Server)
 	}
 	s.mu.Unlock()
-
-	hosts = map[string]string{}
-	seen := map[string]bool{}
-	for _, h := range srvHosts {
-		if h == "" || seen[h] {
-			continue
+	sort.Strings(hosts)
+	out := hosts[:0]
+	for i, h := range hosts {
+		if h != "" && (i == 0 || h != hosts[i-1]) {
+			out = append(out, h)
 		}
-		seen[h] = true
+	}
+	return out
+}
+
+// resolveServers returns the IPs to keep off the tunnel (the Windows/macOS bypass
+// list — Linux uses fwmark) and a domain→IP map for the live config's static
+// hosts (so an exit's own domain resolves locally instead of looping through the
+// tunnel it bootstraps). A lookup that fails keeps the address in prev, if any.
+func (s *Supervisor) resolveServers(srvHosts []string, prev map[string]string) (ips []net.IP, hosts map[string]string) {
+	hosts = map[string]string{}
+	for _, h := range srvHosts {
 		if ip := net.ParseIP(h); ip != nil {
 			ips = append(ips, ip)
 			continue
 		}
-		addrs, err := net.LookupIP(h) // real network — tunnel isn't up yet
+		addrs, err := net.LookupIP(h)
 		if err != nil {
 			s.logf("TUN: resolve %s: %v", h, err)
+			if ip := net.ParseIP(prev[h]); ip != nil {
+				ips = append(ips, ip)
+				hosts[h] = prev[h]
+			}
 			continue
 		}
 		for _, a := range addrs {

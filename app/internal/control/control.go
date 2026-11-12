@@ -6,9 +6,12 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/url"
 	"os"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +25,8 @@ import (
 // Event is a daemon→client message. Line keeps older clients compatible;
 // Record carries filterable severity and origin fields to current clients.
 type Event struct {
-	Type   string          `json:"type"` // "state" | "status" | "log"
+	Type   string          `json:"type"`         // "state" | "status" | "log" | "ack"
+	ID     string          `json:"id,omitempty"` // the acknowledged command's ID
 	State  json.RawMessage `json:"state,omitempty"`
 	Status *engine.Status  `json:"status,omitempty"`
 	Line   string          `json:"line,omitempty"`
@@ -35,7 +39,8 @@ func LogEvent(record loghub.Record) Event {
 
 // Command is a client→daemon message.
 type Command struct {
-	Cmd   string          `json:"cmd"` // "patch" | "addsub" | "rmsub" | "refetch" | "kick"
+	Cmd   string          `json:"cmd"`          // "patch" | "addsub" | "rmsub" | "refetch" | "kick"
+	ID    string          `json:"id,omitempty"` // when set, the daemon answers with an "ack" event once executed
 	Patch json.RawMessage `json:"patch,omitempty"`
 	URL   string          `json:"url,omitempty"`
 	Index int             `json:"index,omitempty"`
@@ -69,9 +74,14 @@ func (h *Hub) subscribe() chan Event {
 	return ch
 }
 
+// unsubscribe closes ch so its writer goroutine ends; under mu, so Broadcast
+// never sends on a closed channel.
 func (h *Hub) unsubscribe(ch chan Event) {
 	h.mu.Lock()
-	delete(h.subs, ch)
+	if _, ok := h.subs[ch]; ok {
+		delete(h.subs, ch)
+		close(ch)
+	}
 	h.mu.Unlock()
 }
 
@@ -92,11 +102,19 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 		_ = os.Remove(ln.Addr().String())
 	}()
 	go s.autoFetchLoop(ctx)
+	backoff := 5 * time.Millisecond
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			return nil // listener closed (ctx done)
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			// A transient failure such as running out of file descriptors.
+			time.Sleep(backoff)
+			backoff = min(2*backoff, time.Second)
+			continue
 		}
+		backoff = 5 * time.Millisecond
 		go s.handle(conn)
 	}
 }
@@ -141,6 +159,12 @@ func (s *Server) handle(conn net.Conn) {
 			return // client gone
 		}
 		s.exec(cmd)
+		if cmd.ID != "" {
+			select {
+			case ch <- Event{Type: "ack", ID: cmd.ID}:
+			default: // a client this far behind isn't reading; don't block on it
+			}
+		}
 	}
 }
 
@@ -149,7 +173,12 @@ func (s *Server) exec(cmd Command) {
 	case "kick":
 		s.sup.Kick()
 	case "patch":
-		s.applyAndBroadcast(func(st *store.State) { _ = json.Unmarshal(cmd.Patch, st) })
+		var fresh store.State
+		if err := json.Unmarshal(cmd.Patch, &fresh); err != nil {
+			s.sup.Logf(loghub.Error, "config", "patch", "rejected settings change: %v", err)
+			return
+		}
+		s.applyAndBroadcast(func(st *store.State) { _ = applyPatch(st, cmd.Patch) })
 	case "rmsub":
 		i := cmd.Index
 		s.applyAndBroadcast(func(st *store.State) { st.RemoveSub(i) })
@@ -158,6 +187,33 @@ func (s *Server) exec(cmd Command) {
 	case "refetch":
 		go s.refetch()
 	}
+}
+
+// applyPatch replaces every top-level field the patch names. Unmarshalling into
+// the live state would merge instead: an array element that omits an omitempty
+// field (a node without "raw", a sub without "fetch_err") would keep the value of
+// whatever element used to sit at that index.
+func applyPatch(st *store.State, patch json.RawMessage) error {
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(patch, &keys); err != nil {
+		return err
+	}
+	var fresh store.State
+	if err := json.Unmarshal(patch, &fresh); err != nil {
+		return err
+	}
+	dst, src := reflect.ValueOf(st).Elem(), reflect.ValueOf(&fresh).Elem()
+	for i := 0; i < dst.NumField(); i++ {
+		field := dst.Type().Field(i)
+		name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if !field.IsExported() || name == "" || name == "-" {
+			continue
+		}
+		if _, ok := keys[name]; ok {
+			dst.Field(i).Set(src.Field(i))
+		}
+	}
+	return nil
 }
 
 func (s *Server) applyAndBroadcast(mut func(*store.State)) {
@@ -337,6 +393,30 @@ func (c *Client) Send(cmd Command) error { return c.enc.Encode(cmd) }
 
 func (c *Client) SendPatch(patch json.RawMessage) error {
 	return c.Send(Command{Cmd: "patch", Patch: patch})
+}
+
+// SendAndWait sends cmd and waits until the daemon has executed it. A one-shot
+// client must not close earlier: on Windows the close can reset the connection
+// before the daemon reads the command, which is then silently lost.
+func (c *Client) SendAndWait(cmd Command, timeout time.Duration) error {
+	cmd.ID = strconv.FormatInt(time.Now().UnixNano(), 36)
+	if err := c.Send(cmd); err != nil {
+		return err
+	}
+	deadline := time.After(timeout)
+	for {
+		select {
+		case e, ok := <-c.events:
+			if !ok {
+				return errors.New("daemon closed the connection before confirming")
+			}
+			if e.Type == "ack" && e.ID == cmd.ID {
+				return nil
+			}
+		case <-deadline:
+			return errors.New("daemon did not confirm the change (is it an older version? restart it)")
+		}
+	}
 }
 
 func (c *Client) Close() error { return c.conn.Close() }

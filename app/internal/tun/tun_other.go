@@ -2,7 +2,10 @@
 
 package tun
 
-import "errors"
+import (
+	"errors"
+	"net"
+)
 
 // Supported reports that TUN mode is not implemented on this OS.
 func Supported() bool { return false }
@@ -43,3 +46,5 @@ func currentDHCPResolver(string) string { return "" }
 
 // HealStaleResolver is macOS-only (see tun_darwin.go).
 func HealStaleResolver() (bool, string) { return false, "" }
+
+func (m *Manager) osSetServerIPs([]net.IP) {}

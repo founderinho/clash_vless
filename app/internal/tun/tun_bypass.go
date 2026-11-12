@@ -35,3 +35,15 @@ func (m *Manager) reconcileBypass(want []net.IP) {
 	}
 	m.logf("tun: bypassing %d server IP(s)", len(m.bypass))
 }
+
+// osSetServerIPs keeps the real-net resolver's bypass, which shares the list.
+func (m *Manager) osSetServerIPs(ips []net.IP) {
+	want := append([]net.IP(nil), ips...)
+	if m.cfg.DNSDirect {
+		if resolver := net.ParseIP(m.cfg.DNS); resolver != nil {
+			want = append(want, resolver)
+		}
+	}
+	m.cfg.ServerIPs = want
+	m.reconcileBypass(want)
+}

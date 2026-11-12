@@ -3,6 +3,7 @@
 package gui
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -24,14 +25,22 @@ import (
 	"clashvless/internal/engine"
 	"clashvless/internal/loghub"
 	"clashvless/internal/store"
+	"clashvless/internal/xray"
 )
 
 type dashboard struct {
 	dialogOpen      bool
 	logRefresh      func() // re-filters the Activity list; only valid while that page is shown
+	pauseLog        bool
 	scroll          *container.Scroll
 	scrollPage      string
+	tabsScroll      *container.Scroll
 	inputs          map[string]*widget.Entry
+	drafts          map[string]string // unsaved settings text, kept across rebuilds
+	tips            *tooltipLayer
+	renderedStatus  string
+	lastRender      time.Time
+	renderQueued    bool
 	app             fyne.App
 	window          fyne.Window
 	client          *control.Client
@@ -62,7 +71,7 @@ func RunClient(client *control.Client, embedded bool) error {
 	d := &dashboard{
 		app: a, window: w, client: client, embedded: embedded,
 		page: "overview", settingsSection: "Network & failover", nav: map[string]*widget.Button{},
-		logFilter: loghub.DefaultFilter(), inputs: map[string]*widget.Entry{},
+		logFilter: loghub.DefaultFilter(), inputs: map[string]*widget.Entry{}, drafts: map[string]string{},
 	}
 	d.buildShell()
 	go d.readEvents()
@@ -84,9 +93,7 @@ func (d *dashboard) readEvents() {
 			case "status":
 				if event.Status != nil {
 					d.status = *event.Status
-					if d.page != "settings" && d.page != "activity" {
-						d.render()
-					}
+					d.statusChanged()
 				}
 			case "log":
 				record := loghub.ParseLine(event.Line)
@@ -99,7 +106,9 @@ func (d *dashboard) readEvents() {
 				}
 				if d.page == "activity" && d.logRefresh != nil {
 					d.logRefresh()
-					d.logList.ScrollToBottom()
+					if !d.pauseLog {
+						d.logList.ScrollToBottom()
+					}
 				}
 			}
 		})
@@ -154,7 +163,51 @@ func (d *dashboard) buildShell() {
 		inset(d.notice, 4, 12, 12, 12),
 	)
 	main := container.NewBorder(nil, statusBar, nil, nil, d.content)
-	d.window.SetContent(container.NewBorder(nil, nil, sidebar, nil, main))
+	d.tips = newTooltipLayer()
+	d.window.SetContent(container.NewStack(container.NewBorder(nil, nil, sidebar, nil, main), d.tips.layer))
+}
+
+// statusRenderGap bounds how often status events rebuild the page: a rebuild
+// between press and release swaps the widget under the pointer and drops the click.
+const statusRenderGap = 1500 * time.Millisecond
+
+func (d *dashboard) statusChanged() {
+	if d.state == nil || d.renderedStatus == d.statusKey() {
+		return
+	}
+	if wait := statusRenderGap - time.Since(d.lastRender); wait > 0 {
+		if !d.renderQueued {
+			d.renderQueued = true
+			time.AfterFunc(wait, func() {
+				fyne.Do(func() {
+					d.renderQueued = false
+					if d.renderedStatus != d.statusKey() {
+						d.render()
+					}
+				})
+			})
+		}
+		return
+	}
+	d.render()
+}
+
+// statusKey is the part of the status the current page shows; an unchanged key
+// means a status event has nothing new to draw.
+func (d *dashboard) statusKey() string {
+	var shown any
+	switch d.page {
+	case "settings", "activity":
+		return d.renderedStatus
+	case "subscriptions":
+		shown = []any{d.status.Country, d.status.Bypass}
+	case "routes":
+		shown = d.status.Slots
+	default:
+		shown = d.status
+	}
+	data, _ := json.Marshal(shown)
+	return string(data)
 }
 
 func (d *dashboard) navigate(page string) {
@@ -166,11 +219,14 @@ func (d *dashboard) render() {
 	if d.state == nil || d.dialogOpen {
 		return
 	}
-	prevScroll, prevPage := d.scroll, d.scrollPage
-	focused := ""
+	prevScroll, prevPage, prevTabs := d.scroll, d.scrollPage, d.tabsScroll
+	d.tabsScroll = nil
+	d.tips.hide(nil)
+	var focused *widget.Entry
+	focusedKey := ""
 	for key, entry := range d.inputs {
 		if d.window.Canvas().Focused() == entry {
-			focused = key
+			focused, focusedKey = entry, key
 		}
 	}
 	d.inputs = map[string]*widget.Entry{}
@@ -221,11 +277,31 @@ func (d *dashboard) render() {
 	if d.page == prevPage && prevScroll != nil {
 		scroll.ScrollToOffset(prevScroll.Offset)
 	}
+	if d.page == prevPage && prevTabs != nil && d.tabsScroll != nil {
+		d.tabsScroll.ScrollToOffset(prevTabs.Offset)
+	}
 	d.scroll, d.scrollPage = scroll, d.page
-	if entry := d.inputs[focused]; entry != nil {
-		entry.CursorColumn = len([]rune(entry.Text))
+	d.lastRender = time.Now()
+	d.renderedStatus = ""
+	d.renderedStatus = d.statusKey()
+	if entry := d.inputs[focusedKey]; entry != nil && focused != nil {
+		entry.CursorRow, entry.CursorColumn = focused.CursorRow, focused.CursorColumn
 		d.window.Canvas().Focus(entry)
 	}
+}
+
+// iconButton is a compact icon action whose hint floats in the tooltip layer.
+func (d *dashboard) iconButton(icon fyne.Resource, hint string, tapped func()) *tooltipIconButton {
+	button := newTooltipIconButton(icon, tapped, nil)
+	button.Hint = hint
+	button.OnHover = func(in bool) {
+		if in {
+			d.tips.show(button, hint)
+		} else {
+			d.tips.hide(button)
+		}
+	}
+	return button
 }
 
 // textInput is an entry that survives render(), which rebuilds the page on every
@@ -306,6 +382,7 @@ func (d *dashboard) confirm(title, message string, apply func()) {
 func (d *dashboard) showDialog(form dialog.Dialog) {
 	// Keep the underlying widget tree stable until the modal releases focus.
 	d.dialogOpen = true
+	d.tips.hide(nil) // the modal covers its button, so MouseOut never comes
 	form.SetOnClosed(func() {
 		d.dialogOpen = false
 		d.render()
@@ -323,26 +400,91 @@ func (d *dashboard) addSubscription() {
 	})
 }
 
+func (d *dashboard) askMultiline(title, label, placeholder, confirm string, apply func(string)) {
+	if d.dialogOpen {
+		return
+	}
+	entry := widget.NewMultiLineEntry()
+	entry.SetPlaceHolder(placeholder)
+	entry.Wrapping = fyne.TextWrapBreak
+	entry.SetMinRowsVisible(6)
+	form := dialog.NewForm(title, confirm, "Cancel", []*widget.FormItem{widget.NewFormItem(label, entry)}, func(ok bool) {
+		if ok {
+			apply(entry.Text)
+		}
+	}, d.window)
+	form.Resize(fitScreen(fyne.NewSize(620, 320)))
+	d.showDialog(form)
+}
+
+// parseExitLinks reads pasted vless:// links, one per line, or a base64
+// subscription blob such as the one "Copy as subscription" produces.
+func parseExitLinks(text string) (links []string, invalid int) {
+	text = strings.TrimSpace(text)
+	if text != "" && !strings.Contains(strings.ToLower(text), "://") && len(strings.Fields(text)) == 1 {
+		for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+			if decoded, err := encoding.DecodeString(text); err == nil {
+				text = string(decoded)
+				break
+			}
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		candidates := []string{line}
+		if strings.Count(strings.ToLower(line), "vless://") > 1 {
+			candidates = strings.Fields(line)
+		}
+		for _, candidate := range candidates {
+			if _, err := xray.VlessToOutbound(candidate, "main"); err != nil {
+				invalid++
+				continue
+			}
+			links = append(links, candidate)
+		}
+	}
+	return links, invalid
+}
+
 func (d *dashboard) addMain(slotIndex int) {
 	if d.state == nil || slotIndex < 0 || slotIndex >= len(d.state.Slots) {
 		d.notify("This slot no longer exists")
 		return
 	}
 	slotName := d.state.Slots[slotIndex].Name
-	d.ask("Add final exit", "VLESS URL", "", "Add", func(value string) {
-		parsed, err := url.Parse(value)
-		if err != nil || parsed.Scheme != "vless" || parsed.Hostname() == "" {
-			d.notify("Enter a valid vless:// URL")
+	d.askMultiline("Add final exits", "VLESS links", "vless://… — one per line, or a base64 subscription", "Add", func(value string) {
+		links, invalid := parseExitLinks(value)
+		if len(links) == 0 {
+			d.notify("Enter at least one valid vless:// link")
 			return
 		}
-		index := d.state.SlotIndexByName(slotName)
-		if index < 0 {
+		if d.state.SlotIndexByName(slotName) < 0 {
 			d.notify("This slot was removed while editing")
 			return
 		}
+		added, duplicate := 0, 0
 		d.updateSlots(func(slots []store.Slot) {
-			slots[index].AddMain(value)
+			slot := &slots[d.state.SlotIndexByName(slotName)]
+			for _, link := range links {
+				if slot.HasMain(link) {
+					duplicate++
+					continue
+				}
+				slot.AddMain(link)
+				added++
+			}
 		})
+		message := fmt.Sprintf("Added %d exit(s) to %s", added, slotName)
+		if duplicate > 0 {
+			message += fmt.Sprintf(" · %d already present", duplicate)
+		}
+		if invalid > 0 {
+			message += fmt.Sprintf(" · %d invalid line(s) skipped", invalid)
+		}
+		d.notify(message)
 	})
 }
 
@@ -353,6 +495,10 @@ func (d *dashboard) addSlot() {
 	d.ask("Add slot", "Slot name", fmt.Sprintf("slot-%d", len(d.state.Slots)+1), "Add", func(name string) {
 		if d.state == nil || name == "" || d.state.SlotIndexByName(name) >= 0 {
 			d.notify("Enter a unique slot name")
+			return
+		}
+		if strings.Contains(name, "://") {
+			d.notify("Slot name cannot contain ://")
 			return
 		}
 		data, _ := json.Marshal(d.state.Slots)
@@ -411,16 +557,77 @@ func (d *dashboard) renameSlot(slotIndex int) {
 	})
 }
 
-func (d *dashboard) removeMain(slotIndex, mainIndex int) {
-	slotName, name := d.state.Slots[slotIndex].Name, d.state.Slots[slotIndex].Mains[mainIndex].Name
-	d.confirm("Delete exit", "Remove "+name+" from this failover slot?", func() {
-		d.updateSlots(func(slots []store.Slot) {
-			// Another client may have changed the slots while this dialog was open.
-			if slotIndex < len(slots) && slots[slotIndex].Name == slotName && mainIndex < len(slots[slotIndex].Mains) && slots[slotIndex].Mains[mainIndex].Name == name {
-				slots[slotIndex].RemoveMain(mainIndex)
-			}
-		})
+// mainRef names an exit by slot name and URL, so an action confirmed after
+// another client reordered or removed exits still edits the intended one.
+type mainRef struct {
+	slot string
+	url  string
+}
+
+func (d *dashboard) mainRef(slotIndex, mainIndex int) (mainRef, bool) {
+	if d.state == nil || slotIndex < 0 || slotIndex >= len(d.state.Slots) {
+		return mainRef{}, false
+	}
+	mains := d.state.Slots[slotIndex].Mains
+	if mainIndex < 0 || mainIndex >= len(mains) {
+		return mainRef{}, false
+	}
+	return mainRef{slot: d.state.Slots[slotIndex].Name, url: mains[mainIndex].URL}, true
+}
+
+// updateMain applies mutate to the referenced exit; false if it no longer exists.
+func (d *dashboard) updateMain(ref mainRef, mutate func(slot *store.Slot, index int)) bool {
+	slotIndex := d.state.SlotIndexByName(ref.slot)
+	if slotIndex < 0 || d.state.Slots[slotIndex].MainIndex(ref.url) < 0 {
+		d.notify("This exit was changed elsewhere; nothing was edited")
+		return false
+	}
+	d.updateSlots(func(slots []store.Slot) {
+		mutate(&slots[slotIndex], slots[slotIndex].MainIndex(ref.url))
 	})
+	return true
+}
+
+func (d *dashboard) removeMain(slotIndex, mainIndex int) {
+	ref, ok := d.mainRef(slotIndex, mainIndex)
+	if !ok {
+		return
+	}
+	name := d.state.Slots[slotIndex].Mains[mainIndex].Name
+	d.confirm("Delete exit", "Remove "+name+" from this failover slot?", func() {
+		d.updateMain(ref, func(slot *store.Slot, index int) { slot.RemoveMain(index) })
+	})
+}
+
+func (d *dashboard) moveMain(slotIndex, mainIndex, delta int) {
+	ref, ok := d.mainRef(slotIndex, mainIndex)
+	if !ok {
+		return
+	}
+	if d.updateMain(ref, func(slot *store.Slot, index int) { slot.MoveMain(index, index+delta) }) {
+		d.notify("Priority updated")
+	}
+}
+
+func (d *dashboard) renameMain(slotIndex, mainIndex int) {
+	ref, ok := d.mainRef(slotIndex, mainIndex)
+	if !ok {
+		return
+	}
+	d.ask("Rename exit", "Exit name", d.state.Slots[slotIndex].Mains[mainIndex].Name, "Save", func(name string) {
+		name = strings.Join(strings.Fields(name), " ")
+		if name == "" {
+			d.notify("Enter an exit name")
+			return
+		}
+		d.updateMain(ref, func(slot *store.Slot, index int) { slot.Mains[index].Name = name })
+	})
+}
+
+func (d *dashboard) setMainFlag(slotIndex, mainIndex int, set func(*store.Main)) {
+	if ref, ok := d.mainRef(slotIndex, mainIndex); ok {
+		d.updateMain(ref, func(slot *store.Slot, index int) { set(&slot.Mains[index]) })
+	}
 }
 
 func logoResource() fyne.Resource {

@@ -104,7 +104,7 @@ func run(args []string) error {
 			return fmt.Errorf("invalid index %q", args[1])
 		}
 		st.RemoveSub(i)
-		if err := st.Save(); err != nil {
+		if err := commit(st, "subs", "active_sub"); err != nil {
 			return err
 		}
 		return cmdSubs(st)
@@ -175,6 +175,7 @@ func run(args []string) error {
 		fmt.Println("  main                  list slots + their final-exit mains")
 		fmt.Println("  main add <vless://> [slot]   add a main (Vision → direct/T1, plain → hop/T2)")
 		fmt.Println("  main rm <index> [slot]       remove a main")
+		fmt.Println("  main move <from> <to> [slot] reorder mains (index 0 = tried first)")
 		fmt.Println("  slot                  list slots (failover pools, each on its own port)")
 		fmt.Println("  slot add [name] · rename <name> <new> · rm <name> · port <name> <port> · tun <name> · enable|disable <name>")
 		fmt.Println("  fetch            refetch all subscriptions")
@@ -210,7 +211,7 @@ func cmdHWID(st *store.State, args []string) error {
 		return errors.New("HWID must be 10–64 chars: a–z A–Z 0–9 = -")
 	}
 	st.Device.HWID = h
-	if err := st.Save(); err != nil {
+	if err := commit(st, "device"); err != nil {
 		return err
 	}
 	printDevice(st)
@@ -322,7 +323,7 @@ func cmdRun(st *store.State, debug bool) error {
 		cancel()
 	}()
 
-	sup.Logf(loghub.Info, "daemon", "lifecycle", "started; SOCKS5 %s:%d; control %s", st.ListenHost(), st.ListenPort, sock)
+	sup.Logf(loghub.Info, "daemon", "lifecycle", "started; SOCKS5 %s port(s) %s; control %s", st.ListenHost(), slotPorts(st), sock)
 	return sup.Run(ctx)
 }
 
@@ -422,7 +423,7 @@ func startEmbeddedDaemon(st *store.State) (func(), error) {
 			sup.Logf(loghub.Error, "daemon", "lifecycle", "%v", err)
 		}
 	}()
-	sup.Logf(loghub.Info, "daemon", "lifecycle", "embedded engine started; SOCKS5 %s:%d", st.ListenHost(), st.ListenPort)
+	sup.Logf(loghub.Info, "daemon", "lifecycle", "embedded engine started; SOCKS5 %s port(s) %s", st.ListenHost(), slotPorts(st))
 	return func() {
 		cancel()
 		// Exiting before Run returns would leave TUN routes and DNS behind.
@@ -525,7 +526,7 @@ func cmdAdd(st *store.State, u string) error {
 		sub.Nodes = nodes
 		sub.LastFetch = time.Now()
 	}
-	if e := st.Save(); e != nil {
+	if e := commit(st, "subs", "active_sub"); e != nil {
 		return e
 	}
 	if err != nil {
@@ -554,7 +555,7 @@ func cmdFetch(st *store.State) error {
 		}
 		fmt.Printf("  %-26s %d nodes\n", st.Subs[i].Name, len(nodes))
 	}
-	return st.Save()
+	return commit(st, "subs")
 }
 
 // cmdLoglevel shows or sets the embedded xray log verbosity.
@@ -569,11 +570,54 @@ func cmdLoglevel(st *store.State, args []string) error {
 	default:
 		return fmt.Errorf("invalid level %q (use: none|error|warning|info|debug)", args[0])
 	}
-	if err := st.Save(); err != nil {
+	if err := commit(st, "log_level"); err != nil {
 		return err
 	}
-	fmt.Println("log level:", st.Loglevel(), "— restart the daemon (or re-run `up`) to apply")
+	fmt.Println("log level:", st.Loglevel(), "— applies as each route is rebuilt (or re-run `up`)")
 	return nil
+}
+
+// slotPorts lists the SOCKS ports of the enabled slots, which is what the daemon serves.
+func slotPorts(st *store.State) string {
+	var ports []string
+	for _, sl := range st.Slots {
+		if sl.Enabled {
+			ports = append(ports, strconv.Itoa(sl.Port))
+		}
+	}
+	if len(ports) == 0 {
+		return "none (no enabled slot)"
+	}
+	return strings.Join(ports, ", ")
+}
+
+// commit saves a CLI edit. A running daemon keeps its own copy of the state and
+// would overwrite a direct file write on its next save, so the named fields go
+// to it as a patch instead.
+func commit(st *store.State, keys ...string) error {
+	client, err := control.Dial(st.ControlSocketPath())
+	if err != nil {
+		return st.Save()
+	}
+	defer client.Close()
+	data, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	fields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	patch := map[string]json.RawMessage{}
+	for _, key := range keys {
+		value, ok := fields[key]
+		if !ok {
+			value = json.RawMessage("null") // an omitted empty field
+		}
+		patch[key] = value
+	}
+	data, _ = json.Marshal(patch)
+	return client.SendAndWait(control.Command{Cmd: "patch", Patch: data}, 5*time.Second)
 }
 
 // cmdFetchProxy shows or sets the SOCKS5 proxy used for subscription fetches.
@@ -590,10 +634,9 @@ func cmdTun(st *store.State, args []string) error {
 		if client, err := control.Dial(st.ControlSocketPath()); err == nil {
 			defer client.Close()
 			b, _ := json.Marshal(patch)
-			if err := client.SendPatch(b); err != nil {
+			if err := client.SendAndWait(control.Command{Cmd: "patch", Patch: b}, 5*time.Second); err != nil {
 				return err
 			}
-			_ = client.Send(control.Command{Cmd: "kick"})
 			fmt.Println("  applied to the running daemon (toggle TUN off/on for it to take effect)")
 			return nil
 		}
@@ -610,10 +653,9 @@ func cmdTun(st *store.State, args []string) error {
 		if client, err := control.Dial(st.ControlSocketPath()); err == nil {
 			defer client.Close()
 			patch, _ := json.Marshal(map[string]any{"tun_enabled": want})
-			if err := client.SendPatch(patch); err != nil {
+			if err := client.SendAndWait(control.Command{Cmd: "patch", Patch: patch}, 5*time.Second); err != nil {
 				return err
 			}
-			_ = client.Send(control.Command{Cmd: "kick"})
 			fmt.Printf("TUN %s — sent to the running daemon\n", onOff(want))
 		} else {
 			st.TunEnabled = want
@@ -799,7 +841,7 @@ func cmdFetchProxy(st *store.State, args []string) error {
 		st.FetchProxy = strings.TrimSpace(args[0])
 		st.UseFetchProxy = true
 	}
-	if err := st.Save(); err != nil {
+	if err := commit(st, "fetch_proxy", "use_fetch_proxy"); err != nil {
 		return err
 	}
 	return cmdFetchProxy(st, nil)
@@ -850,8 +892,31 @@ func cmdMain(st *store.State, args []string) error {
 		if err != nil {
 			return err
 		}
+		if i < 0 || i >= len(sl.Mains) {
+			return fmt.Errorf("no main %d in slot %q", i, sl.Name)
+		}
 		sl.RemoveMain(i)
-		if err := st.Save(); err != nil {
+		if err := commit(st, "slots"); err != nil {
+			return err
+		}
+		return listMains(st)
+	case "move", "mv":
+		if len(args) < 3 {
+			return errors.New("usage: clashvless main move <from> <to> [slot]   (index 0 = highest priority)")
+		}
+		from, err1 := strconv.Atoi(args[1])
+		to, err2 := strconv.Atoi(args[2])
+		if err1 != nil || err2 != nil {
+			return fmt.Errorf("invalid index in %q %q", args[1], args[2])
+		}
+		sl, err := slotArg(st, argOr(args, 3, ""))
+		if err != nil {
+			return err
+		}
+		if !sl.MoveMain(from, to) {
+			return fmt.Errorf("can't move main %d to %d in slot %q (it has %d)", from, to, sl.Name, len(sl.Mains))
+		}
+		if err := commit(st, "slots"); err != nil {
 			return err
 		}
 		return listMains(st)
@@ -870,7 +935,7 @@ func addMainCLI(st *store.State, u, slot string) error {
 		return err
 	}
 	sl.AddMain(u)
-	if err := st.Save(); err != nil {
+	if err := commit(st, "slots"); err != nil {
 		return err
 	}
 	fmt.Printf("✓ added to slot %q — %s\n", sl.Name, mainModeHint(u))
@@ -922,7 +987,7 @@ func cmdSlot(st *store.State, args []string) error {
 	switch args[0] {
 	case "add":
 		sl := st.AddSlot(argOr(args, 1, ""))
-		if err := st.Save(); err != nil {
+		if err := commit(st, "slots", "tun_slot"); err != nil {
 			return err
 		}
 		fmt.Printf("✓ slot %q added on :%d\n", sl.Name, sl.Port)
@@ -940,7 +1005,7 @@ func cmdSlot(st *store.State, args []string) error {
 		if err := st.RenameSlot(i, newName); err != nil {
 			return err
 		}
-		if err := st.Save(); err != nil {
+		if err := commit(st, "slots", "tun_slot"); err != nil {
 			return err
 		}
 		fmt.Printf("✓ slot %q renamed to %q\n", oldName, newName)
@@ -958,7 +1023,7 @@ func cmdSlot(st *store.State, args []string) error {
 		}
 		name := st.Slots[i].Name
 		st.RemoveSlot(i)
-		if err := st.Save(); err != nil {
+		if err := commit(st, "slots", "tun_slot"); err != nil {
 			return err
 		}
 		fmt.Printf("✓ slot %q removed\n", name)
@@ -975,11 +1040,14 @@ func cmdSlot(st *store.State, args []string) error {
 		if err != nil || p < 1024 || p > 65534 {
 			return fmt.Errorf("invalid port %q (1024–65534)", args[2])
 		}
+		if st.SlotPortConflict(st.SlotIndexByName(sl.Name), p) {
+			return fmt.Errorf("port %d or its first-hop port %d is already used by another slot", p, p+1)
+		}
 		sl.Port = p
-		if err := st.Save(); err != nil {
+		if err := commit(st, "slots", "tun_slot"); err != nil {
 			return err
 		}
-		fmt.Printf("✓ slot %q → :%d (restart the daemon to apply)\n", sl.Name, p)
+		fmt.Printf("✓ slot %q → :%d\n", sl.Name, p)
 		return listMains(st)
 	case "tun":
 		if len(args) < 2 {
@@ -990,7 +1058,7 @@ func cmdSlot(st *store.State, args []string) error {
 			return err
 		}
 		st.TunSlot = sl.Name
-		if err := st.Save(); err != nil {
+		if err := commit(st, "slots", "tun_slot"); err != nil {
 			return err
 		}
 		fmt.Printf("✓ TUN slot → %q (:%d)\n", sl.Name, sl.Port)
@@ -1004,7 +1072,7 @@ func cmdSlot(st *store.State, args []string) error {
 			return err
 		}
 		sl.Enabled = args[0] == "enable"
-		if err := st.Save(); err != nil {
+		if err := commit(st, "slots", "tun_slot"); err != nil {
 			return err
 		}
 		return listMains(st)

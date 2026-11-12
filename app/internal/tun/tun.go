@@ -219,6 +219,17 @@ func replaceResolverIP(ips []net.IP, old, updated string) []net.IP {
 	return out
 }
 
+// SetServerIPs re-points the per-server bypass at the current server set: exits
+// and nodes come and go with edits and refetches while TUN stays up. Linux keeps
+// xray off-tun by fwmark, so there it has nothing to do. No-op when not up.
+func (m *Manager) SetServerIPs(ips []net.IP) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.up {
+		m.osSetServerIPs(ips)
+	}
+}
+
 // Down restores routes and DNS. Safe to call when not up.
 func (m *Manager) Down() error {
 	m.mu.Lock()

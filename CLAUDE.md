@@ -37,12 +37,30 @@ or a **system-wide TUN** — with automatic tiered failover.
     non-empty names and keeps `tun_slot` in sync. Slot enable is designed as a slider switch placed right
     after the rename icon (`<rename icon> | <Enabled/Disabled> <slider>`), and a delete icon sits in the top
     right corner of the slot box triggering the slot delete confirmation.
+    Icon actions are `dashboard.iconButton` (`tooltipIconButton` with a `Hint`); hints float in one
+    `tooltipLayer` stacked over the window. It holds only canvas objects, which are never hit targets, so it
+    can't steal clicks or hover, and showing a hint doesn't shift the row. Each exit row shows its priority number,
+    an "In use" highlight with tier/latency, raise/lower arrows (reorder = priority), share (QR), rename, and delete, plus
+    a usage line from `mainUsage` (red when an enabled exit can never be used, e.g. Vision without T1).
+    Exit edits go through `mainRef` (slot name + URL), so a confirmation or rename finishing after another client
+    reordered the exits still hits the right one. "Add final exits" takes several links, one per line, or a base64
+    subscription. **Export** (`share.go`) is Marzban-style: a QR per link (`rsc.io/qr`, drawn black-on-white with a
+    quiet zone), Copy link, and for lists Copy all links / Copy as subscription (base64). It exists per exit, per slot,
+    per entry node, and per provider. Nodes without a `raw` link go through `xray.OutboundToVLESS`, and any setting a
+    link can't carry (e.g. `finalmask`) is named in the dialog. Status events rebuild the page at most every
+    `statusRenderGap`, and only when the part the page shows changed (`statusKey`). A rebuild between press and
+    release drops the click. Settings fields keep unsaved text in `drafts` across rebuilds and validate before
+    saving (IP, IPv4 CIDR, MTU 576–9000, first-hop port collisions). The "Listen port" row is gone: slot ports are
+    edited per slot. Activity has a "Follow new records" toggle. Overview copies a dialable address (`connectHost`:
+    a wildcard bind becomes `127.0.0.1`) and shows each slot's first-hop port.
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
     desktop, and Android. `control.Event.Record` carries structured fields while `Line` preserves compatibility.
     Both embedded and standalone daemons route xray-core through the same hub; GUI mode no longer discards xray logs.
   - `internal/happ` — fetches a Remnawave sub (Happ 3.x mimic; optional SOCKS5 fetch proxy); parses
     base64 / URI-list / xray-JSON, building a `vless://` outbound for URI-list nodes so they're usable.
   - `internal/xray` — `vless://` → xray outbound, and full-config assembly (incl. entry→main chaining).
+    `OutboundToVLESS` (`share.go`) is the inverse for export: vnext or flat vless settings, reality/tls,
+    tcp/ws/grpc/xhttp. It returns the settings a link drops. Round-trip tested against `VlessToOutbound`.
   - `internal/engine` — embeds xray-core in-process. `Supervisor` is now a **manager** of one
     `slotRunner` per enabled slot (each = a failover pool on its own port) + the **shared** real-egress
     pool probe, speed loop, and TUN bridge; `publish()` aggregates every runner's `SlotStatus` into `Status`.
@@ -59,6 +77,14 @@ or a **system-wide TUN** — with automatic tiered failover.
     on Windows a `connect()` to a missing AF_UNIX path **creates a 0-byte file there**, and `bind()` then fails with
     "address in use", so the old dial-retry racing `Remove`+`Listen` kept the embedded TUI from starting. A client
     dialing with no daemon (e.g. `status`) leaves that file behind; `Listen` clears it.
+    A **patch replaces each top-level field it names** (`applyPatch`); a malformed patch is logged and dropped.
+    Unmarshalling into the live state used to merge: an array element that omitted an `omitempty` field
+    (a node without `raw`, a sub without `fetch_err`) kept whatever the old element at that index had. So
+    removing a subscription from the TUI grafted the removed sub's `raw` links onto the next one. `unsubscribe`
+    closes the client's channel, because its writer goroutine leaked on every disconnect. `Serve` backs off and
+    keeps accepting on transient errors such as EMFILE. CLI edits (`add`, `rm`, `fetch`, `main …`, `slot …`,
+    `hwid`, `fetch-proxy`, `loglevel`) go to a running daemon as patches (`commit` in `main.go`). Before this,
+    they wrote `state.json` behind the daemon, which overwrote them on its next save.
   - `internal/tui` — Bubble Tea dashboard client (Status / Subs / Main / Log / Config); `wizard.go`
     is the first-run setup wizard (sub → proxy → HWID → fetch → review → exit, with a non-plain warning).
     The **Main** tab is now a **slots** view: each slot shows its port, on/off, TUN marker (◉) and live tier,
@@ -91,7 +117,9 @@ or a **system-wide TUN** — with automatic tiered failover.
     printing PASS/FAIL. Proves why chaining uses dialerProxy; re-run after any xray-core bump.
   - `cmd/tunprobe` — root/admin-only lab: starts JUST the TUN bridge, confirms xray creates the device,
     then tears down **without touching routing** (safe). Answers "does the native tun inbound work here?".
-- `app/vendor/` — vendored deps (committed; builds are hermetic/offline). Holds **five local patches**
+- `app/vendor/` — vendored deps (committed; builds are hermetic/offline). To add a dependency without losing the
+  patches: `go get`, import it, `go mod vendor`, then `git checkout -- vendor/github.com vendor/gvisor.dev` and
+  check that `git status vendor` shows only the new module plus `modules.txt`. Holds **five local patches**
   (grep `clashvless`): (1) gVisor `network/ipv4` echo-reply gate for TUN ping — see **ICMP ping**; (2)
   `transport/internet/grpc/dial.go` **content-keys** the global gRPC client-conn cache. It was keyed by the
   `*MemoryStreamConfig` **pointer**, so each failover probe (a fresh throwaway instance → fresh pointer) missed
@@ -220,7 +248,14 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
   CLI + wizard operate on the **first** slot; the TUI manages all slots.
 - **Mains** (`Slot.Mains`, each `{Enabled, AllowNoHop}`): `AllowNoHop` mains are tried **direct**
   (T1); every enabled **non-Vision** main is eligible to be dialed **through a hop** (T2/T3). Vision
-  exits are direct-only (chaining strips their XTLS flow) so they never hop.
+  exits are direct-only (chaining strips their XTLS flow) so they never hop. **Order is priority**: within a
+  tier the cascade tries mains top to bottom (`Slot.MoveMain`; GUI arrows, CLI `main move <from> <to> [slot]`).
+  The cycle follows edits immediately rather than waiting for the live chain to fail. `mainsSignature` notices
+  a change to the eligible mains and re-selects; the same main on the same tier is kept, so its entry isn't
+  churned. A live main that was deleted, disabled, or demoted, or whose tier a pin or force-hop now excludes,
+  is retired at once (`followLiveMain` matches it by outbound, so a rename keeps it serving under the new
+  name). A slot with no usable main stops serving. A swap whose new instance fails to start reports the slot
+  down (`applyFailed`), not the old tier.
 - **Tiers** (auto-cascade with hysteresis, **per slot**; `slotRunner.cycle` in `engine/supervisor.go`):
   - **T1** a w/o-hop `main` used directly (XTLS-Vision OK here).
   - **T2** a non-Vision `main` dialed *through* a country-exit entry node.
@@ -236,7 +271,8 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
     (`stabBucketPct`) so only a *clear* stability gap overrides throughput; under-sampled nodes
     (`< minStabSamples`) sit mid-pack (`unknownFlakePct`) so the pick degrades gracefully on a cold start.
     **Within a band the tiebreak is mean throughput** (`meanSpeed`, rolling 1h of the rare speedtest sweep,
-    `speedWindow`), higher wins. The sweep (`runSpeeds`) measures each node **as an entry chained to the TUN slot's first hop-able
+    `speedWindow`), higher wins; nodes with a measurement rank ahead of unmeasured ones in the same band
+    (`rankKey.less` — comparing speed only when both had it was intransitive). The sweep (`runSpeeds`) measures each node **as an entry chained to the TUN slot's first hop-able
     main** (`speedRefMain`), one test at a time — NOT the node as its own exit: a node can be fast alone yet crawl in
     front of the main (its path to the main's server is throttled; measured 2026-11-05: 🇩🇪 22.8 Mbps alone vs 0.5
     chained). Reachable-but-failed transfers score 0; a non-2xx reference reply (`ErrSpeedRefused`, e.g. Cloudflare
@@ -292,7 +328,7 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
     TUN-designated slot, so a down TUN slot (e.g. a Vision-pinned slot whose reality main can't hop) painted
     the whole header `✖ DOWN` while the default slot the user actually points apps at (`:2084`) was serving.
 - **First-hop port**: **every** slot exposes its entry (first hop) on its **own port + 1** by default
-  (`slotEntryPortLocked` in `engine/supervisor.go`) — so each slot's hop is reachable while a chained
+  (`store.HopPort`, also used for port-collision checks: `SlotPortConflict`, `EntryPortConflict`) — so each slot's hop is reachable while a chained
   tier is active. The **default (first) slot** additionally honors the global `store.EntryPort` config
   override (Config-tab **First-hop port**, `0` = auto = `ListenPort+1`); other slots always use `Port+1`.
   Because each slot claims `Port` **and** `Port+1`, slots are **spaced two apart** — `store.freeSlotPort`
@@ -348,6 +384,12 @@ for heap/goroutine leak hunts — see the gRPC probe-leak note under `app/vendor
     minute (`Cannot create a file when that file already exists`). `Status.TunUp` reports real capture while that happens:
     `TunEnabled` is only the wish, and traffic goes out directly until TUN is up, so clients must not show "Connected".
     Embedded daemons wait for `Supervisor.Run` on exit (`startEmbeddedDaemon`'s stop func) so routes and DNS get restored.
+  - **Server list refresh** (`engine.tunRefreshServers`, `tun.Manager.SetServerIPs`): the bypass list and static
+    hosts were resolved only at bring-up. A refetch or a newly added exit then left new servers without a bypass
+    route on Windows/macOS, so their probes went through the very exit they might replace. Each tick compares
+    the sorted host list (`tunServerHosts`) with the one last resolved. On a change it re-resolves (a failed
+    lookup keeps the previous address), reconciles the per-server routes (keeping the real-net resolver's), and
+    re-decorates xray with the new hosts. On Linux, fwmark already covers every socket, so only the hosts change.
   - **Route re-assert watchdog** (`tun.Manager.Reassert`/`osReassert`, `engine.syncTun`→`tunReassert`): a
     network event (DHCP renew, Wi-Fi bounce, sleep/wake) can wipe the `0/1`+`128/1` capture halves out from
     under us — the tun device stays up but the default falls back to the real uplink, so traffic **silently

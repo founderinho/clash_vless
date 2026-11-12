@@ -117,3 +117,98 @@ func TestRenameSlot(t *testing.T) {
 		t.Fatal("expected error on URL slot name")
 	}
 }
+
+func TestMoveMain(t *testing.T) {
+	sl := Slot{Mains: []Main{{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"}}}
+	names := func() string {
+		var out string
+		for _, m := range sl.Mains {
+			out += m.Name
+		}
+		return out
+	}
+	for _, step := range []struct {
+		from, to int
+		ok       bool
+		want     string
+	}{
+		{0, 2, true, "bcad"},
+		{3, 0, true, "dbca"},
+		{1, 1, false, "dbca"},
+		{-1, 0, false, "dbca"},
+		{0, 4, false, "dbca"},
+	} {
+		if ok := sl.MoveMain(step.from, step.to); ok != step.ok || names() != step.want {
+			t.Fatalf("MoveMain(%d, %d) = %v, order %s; want %v, %s", step.from, step.to, ok, names(), step.ok, step.want)
+		}
+	}
+	if sl.MainIndex("") != 0 || sl.HasMain("missing") {
+		t.Fatal("MainIndex/HasMain disagree with the slot")
+	}
+}
+
+func TestRemoveSubKeepsActiveSelection(t *testing.T) {
+	s := &State{Subs: []Subscription{{Name: "A"}, {Name: "B"}, {Name: "C"}}, ActiveSub: 1}
+	s.RemoveSub(0)
+	if s.Subs[s.ActiveSub].Name != "B" {
+		t.Fatalf("active sub became %s", s.Subs[s.ActiveSub].Name)
+	}
+	s.RemoveSub(0) // the active one: fall back to what is now first
+	if s.ActiveSub != 0 || s.Subs[0].Name != "C" {
+		t.Fatalf("active = %d over %v", s.ActiveSub, s.Subs)
+	}
+}
+
+func TestSlotPortConflicts(t *testing.T) {
+	s := &State{ListenPort: 2084, Slots: []Slot{{Name: "a", Port: 2084}, {Name: "b", Port: 2086}}}
+	for _, c := range []struct {
+		slot, port int
+		clash      bool
+	}{
+		{1, 2084, true},  // a's SOCKS port
+		{1, 2083, true},  // its hop would be a's port
+		{1, 2085, true},  // a's hop
+		{1, 2088, false}, // free pair
+		{0, 2087, true},  // b's hop
+		{0, 2090, false},
+	} {
+		if got := s.SlotPortConflict(c.slot, c.port); got != c.clash {
+			t.Errorf("SlotPortConflict(%d, %d) = %v", c.slot, c.port, got)
+		}
+	}
+	s.EntryPort = 3000 // the first slot's hop moves off Port+1
+	if s.HopPort(0) != 3000 || s.SlotPortConflict(1, 2085) {
+		t.Errorf("hop override ignored: HopPort(0) = %d", s.HopPort(0))
+	}
+	if !s.SlotPortConflict(1, 2999) || !s.SlotPortConflict(1, 3000) {
+		t.Error("a slot may not take the overridden first-hop port")
+	}
+	for port, clash := range map[int]bool{0: false, 2084: true, 2086: true, 2087: true, 3001: false} {
+		if got := s.EntryPortConflict(port); got != clash {
+			t.Errorf("EntryPortConflict(%d) = %v", port, got)
+		}
+	}
+}
+
+func TestMainNameDecodesOnce(t *testing.T) {
+	for raw, want := range map[string]string{
+		"vless://u@h:1#DE%20100%25": "DE 100%",
+		"vless://u@h:1#A+B":         "A+B",
+		"vless://u@h:1":             "h:1",
+	} {
+		if got := mainName(raw); got != want {
+			t.Errorf("mainName(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestLoadAcceptsBOM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("\xef\xbb\xbf{\"listen_port\": 2500, \"listen_addr\": \"127.0.0.1\"}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Load(path)
+	if err != nil || st.ListenPort != 2500 {
+		t.Fatalf("Load = %v, %v", st, err)
+	}
+}
