@@ -39,6 +39,10 @@ cd clash_vless
 python build.py
 ```
 
+When an Android SDK (`platforms;android-34`, `build-tools;35.0.0`, ideally an NDK), a JDK 17+, bash and `zip`
+are available, `build.py` also builds `dist/clashvless.apk`; otherwise it lists what is missing and skips it.
+Use `--apk` to require the APK or `--no-apk` to skip it.
+
 On Windows Wintun is bundled inside each executable, so you can share a standalone `.exe`. The build creates `dist/clashvless.exe` as a native windowed application (no console window) and
 `dist/clashvless-cli.exe` for terminal commands. Windows x86 and x64 builds request administrator
 privileges at startup, so Windows may show a UAC prompt. On other desktop platforms it creates `dist/clashvless`.

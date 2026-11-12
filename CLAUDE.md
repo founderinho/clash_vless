@@ -232,6 +232,11 @@ or a **system-wide TUN** — with automatic tiered failover.
 General build messages persist; package progress occupies one replacing subline on a terminal,
 while compiler diagnostics are retained. Windows outputs both windowed and CLI executables;
 Wintun is embedded from the committed signed archive, so builds need no DLL download.
+It then builds `dist/clashvless.apk` through `android/build.sh` when the tools are present (`android_toolchain`):
+an SDK with `platforms;android-34` + `build-tools;35.0.0` (`ANDROID_HOME`, `ANDROID_SDK_ROOT`, or the default
+locations), a JDK 17+ (`JAVA_HOME`, `~/.jdks`, or `PATH`), bash (Git/MSYS2 bash on Windows, never WSL's), and `zip`.
+Otherwise it says what is missing and skips; `--apk` makes that an error, `--no-apk` skips it. The APK step drops
+`GOOS`/`GOARCH`/`CC`/`CGO_ENABLED` so a desktop cross-build's settings don't reach the per-ABI builds.
 ```
 go -C app build -o ../dist/clashvless .     # build the single binary
 go -C app run . [command]                   # run from source

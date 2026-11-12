@@ -42,7 +42,7 @@ gob() {
 }
 if [ -n "$NDK" ]; then
   HOST=linux-x86_64
-  case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) HOST=windows-x86_64 ;; esac
+  case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) HOST=windows-x86_64 ;; Darwin) HOST=darwin-x86_64 ;; esac
   TC="$NDK/toolchains/llvm/prebuilt/$HOST/bin"
   if [ "$HOST" = windows-x86_64 ]; then
     TC=$(powershell.exe -NoProfile -Command "(New-Object -ComObject Scripting.FileSystemObject).GetFolder('$(cygpath -w "$TC")').ShortPath" | tr -d '\r')
