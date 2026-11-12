@@ -214,7 +214,7 @@ type State struct {
 const DefaultUA = "Happ/3.13.0"
 
 // Version is the app version, shown in the TUI header and `version` command.
-const Version = "0.33.3"
+const Version = "0.33.4"
 
 func Dir() (string, error) {
 	base, err := os.UserConfigDir()

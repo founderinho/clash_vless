@@ -5,6 +5,7 @@ package gui
 import (
 	"encoding/json"
 	"fmt"
+	"image/color"
 	"net"
 	"strconv"
 	"strings"
@@ -111,7 +112,7 @@ func (d *dashboard) routesView() fyne.CanvasObject {
 	} else {
 		items = append(items, panel("", "", muted("No failover slots configured. Click \"Add slot\" to create one.")))
 	}
-	return container.NewVBox(items...)
+	return container.New(layout.NewCustomPaddedVBoxLayout(12), items...)
 }
 
 func slotTitleLabel(name string) *widget.Label {
@@ -181,41 +182,53 @@ func (d *dashboard) slotPanel(slotIndex int, slot store.Slot, tunSlot string) fy
 	if len(slot.Mains) == 0 {
 		exportBtn.Disable()
 	}
-	rows := []fyne.CanvasObject{
-		titleRow,
-		flexRow(slotLiveLine(slot.Enabled, live), container.NewHBox(ports...)),
-		container.NewHBox(widget.NewButton("Edit port", func() { d.editSlotPort(slotIndex) }), vpnBtn, exportBtn),
-		widget.NewSeparator(),
-	}
+	liveLine, tone := slotLiveLine(slot.Enabled, live)
+	status := tonedBox(flexRow(liveLine, container.NewHBox(ports...)), tone, 8, 10)
+	actions := container.NewHBox(widget.NewButton("Edit port", func() { d.editSlotPort(slotIndex) }), vpnBtn, exportBtn)
+	slotCard := panel("", "", container.New(layout.NewCustomPaddedVBoxLayout(10), titleRow, status, actions))
+
+	var exits []fyne.CanvasObject
 	if len(slot.Mains) == 0 {
-		rows = append(rows, muted("No final exits in this slot yet."))
-	} else {
-		heading := canvas.NewText("Final exits", colorText)
-		heading.TextSize = 12
-		heading.TextStyle = fyne.TextStyle{Bold: true}
-		rows = append(rows, container.NewHBox(heading, muted("in priority order: the top working one is used")))
+		exits = append(exits, muted("No final exits in this slot yet."))
 	}
 	for mainIndex, main := range slot.Mains {
-		rows = append(rows, widget.NewSeparator(), d.mainRow(slotIndex, mainIndex, len(slot.Mains), main, live))
+		exits = append(exits, d.mainRow(slotIndex, mainIndex, len(slot.Mains), main, live))
 	}
-	rows = append(rows, widget.NewButtonWithIcon("Add final exits", theme.ContentAddIcon(), func() { d.addMain(slotIndex) }))
-	return panel("", "", rows...)
+	exits = append(exits, widget.NewButtonWithIcon("Add final exits", theme.ContentAddIcon(), func() { d.addMain(slotIndex) }))
+	subtitle := "In priority order: the top working exit is used"
+	if len(slot.Mains) > 0 {
+		subtitle = fmt.Sprintf("%d in priority order: the top working exit is used", len(slot.Mains))
+	}
+	exitCard := panel("", "", inset(container.New(layout.NewCustomPaddedVBoxLayout(2), strong("Final exits"), muted(subtitle)), 0, 6, 0, 0),
+		container.New(layout.NewCustomPaddedVBoxLayout(8), exits...))
+	return container.New(layout.NewCustomPaddedVBoxLayout(12), slotCard, exitCard)
 }
 
-// slotLiveLine is the slot's state in one line: a colored tag, then the route.
-func slotLiveLine(enabled bool, live engine.SlotStatus) fyne.CanvasObject {
-	tag, detail, detailColor := neutralChip("Checking"), "looking for a working exit…", colorMuted
+// tonedBox sets a block apart with a soft tint and border instead of separator lines.
+func tonedBox(content fyne.CanvasObject, tone color.NRGBA, vertical, horizontal float32) fyne.CanvasObject {
+	fill, stroke := tone, tone
+	fill.A, stroke.A = 20, 70
+	box := canvas.NewRectangle(fill)
+	box.CornerRadius = 6
+	box.StrokeColor = stroke
+	box.StrokeWidth = 1
+	return container.NewStack(box, inset(content, vertical, vertical, horizontal, horizontal))
+}
+
+// slotLiveLine is the slot's state in one line: a colored tag, then the route; tone colors its box.
+func slotLiveLine(enabled bool, live engine.SlotStatus) (fyne.CanvasObject, color.NRGBA) {
+	tag, detail, detailColor, tone := neutralChip("Checking"), "looking for a working exit…", colorMuted, colorMuted
 	switch {
 	case !enabled:
 		tag, detail = neutralChip("Off"), "this slot is not serving"
 	case live.HopOnly: // Main names the entry node the hop port serves
-		tag, detail, detailColor = tintChip("First hop only", colorWarning), live.Main+" · no final exit reachable", colorText
+		tag, detail, detailColor, tone = tintChip("First hop only", colorWarning), live.Main+" · no final exit reachable", colorText, colorWarning
 	case live.Tier > 0:
 		label := fmt.Sprintf("T%d %s", live.Tier, tierName(live.Tier))
 		if live.Egress > 0 {
 			label += " · " + milliseconds(live.Egress)
 		}
-		tag, detail, detailColor = tintChip(label, colorAccent), live.Main, colorText
+		tag, detail, detailColor, tone = tintChip(label, colorAccent), live.Main, colorText, colorAccent
 		if live.Entry != "" {
 			detail = live.Entry + " → " + live.Main
 		}
@@ -223,9 +236,9 @@ func slotLiveLine(enabled bool, live engine.SlotStatus) fyne.CanvasObject {
 			detail += " · " + live.Note
 		}
 	case live.Err != "":
-		tag, detail, detailColor = tintChip("Down", colorDanger), live.Err, colorText
+		tag, detail, detailColor, tone = tintChip("Down", colorDanger), live.Err, colorText, colorDanger
 	}
-	return container.NewBorder(nil, nil, inset(tag, 0, 0, 0, 6), nil, newFitText(detail, detailColor, 13, false))
+	return container.NewBorder(nil, nil, inset(tag, 0, 0, 0, 8), nil, newFitText(detail, detailColor, 13, false)), tone
 }
 
 // mainUsage says, in a couple of words, which tiers can use an exit.
@@ -283,7 +296,6 @@ func (d *dashboard) mainRow(slotIndex, mainIndex, count int, main store.Main, li
 		tags = append(tags, neutralChip(usage))
 	}
 	meta := container.NewBorder(nil, nil, container.NewHBox(tags...), nil, newFitText(mainHost(main.URL), colorMuted, 12, false))
-	info := container.New(layout.NewCustomPaddedVBoxLayout(4), title, meta)
 
 	up := d.iconButton(theme.MoveUpIcon(), "Raise priority", func() { d.moveMain(slotIndex, mainIndex, -1) })
 	up.Disabled = mainIndex == 0
@@ -305,10 +317,21 @@ func (d *dashboard) mainRow(slotIndex, mainIndex, count int, main store.Main, li
 		d.setMainFlag(slotIndex, mainIndex, func(m *store.Main) { m.AllowNoHop = on })
 	})
 	direct.Checked = main.AllowNoHop
-	toggles := inset(container.NewHBox(exitEnabled, direct), 0, 0, 22, 0)
+	toggles := inset(container.NewHBox(exitEnabled, direct), 0, 0, -8, 0) // the checkbox's own padding
 
-	head := container.NewBorder(nil, nil, inset(badge, 0, 0, 0, 6), nil, info)
-	return container.NewVBox(flexRow(head, actions), toggles)
+	info := container.New(layout.NewCustomPaddedVBoxLayout(6), flexRow(title, actions), meta, toggles)
+	body := container.NewBorder(nil, nil, container.NewVBox(inset(badge, 6, 0, 0, 10)), nil, info)
+
+	fill, stroke := colorBackground, colorBorder
+	if active {
+		stroke = colorAccent
+		stroke.A = 140
+	}
+	card := canvas.NewRectangle(fill)
+	card.CornerRadius = 6
+	card.StrokeColor = stroke
+	card.StrokeWidth = 1
+	return container.NewStack(card, inset(body, 8, 4, 12, 8))
 }
 
 func (d *dashboard) editSlotPort(slotIndex int) {

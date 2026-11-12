@@ -209,10 +209,11 @@ func (d *dashboard) endpointsPanel() fyne.CanvasObject {
 			buttons = append(buttons, copyButton("Copy hop", address(hop), widget.LowImportance))
 		}
 		buttons = append(buttons, copyButton("Copy", address(slot.Port), widget.MediumImportance))
+		liveLine, _ := slotLiveLine(true, live[slot.Name])
 		info := container.New(layout.NewCustomPaddedVBoxLayout(2),
 			titleWithTags(newFitText(slot.Name, colorText, 14, true), tags...),
 			newFitText(detail, colorText, 13, false),
-			slotLiveLine(true, live[slot.Name]),
+			liveLine,
 		)
 		if len(rows) > 0 {
 			rows = append(rows, widget.NewSeparator())

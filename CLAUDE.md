@@ -48,9 +48,11 @@ or a **system-wide TUN** — with automatic tiered failover.
     right corner of the slot box triggering the slot delete confirmation.
     Icon actions are `dashboard.iconButton` (`tooltipIconButton` with a `Hint`); hints float in one
     `tooltipLayer` stacked over the window. It holds only canvas objects, which are never hit targets, so it
-    can't steal clicks or hover, and showing a hint doesn't shift the row. Text under names is kept to one line of short tags (`labels.go`):
+    can't steal clicks or hover, and showing a hint doesn't shift the row. A slot is two cards spaced apart, with no
+    separator lines: the slot card (title row, a status strip, actions) and a "Final exits" card where each exit is
+    its own bordered card (accent border when in use). Text under names is kept to one line of short tags (`labels.go`):
     a slot shows `slotLiveLine` (a colored state tag such as "T1 Direct · 87 ms", "First hop only", "Down", then the
-    route or error) with Port/Hop chips on the right; an exit shows its name, then chips for "In use", protocol and
+    route or error) with Port/Hop chips on the right, inside a `tonedBox` tinted by the state; an exit shows its name, then chips for "In use", protocol and
     `mainUsage` ("Direct or hop", "Hop only", red "Unused: Vision needs direct"), then the host. Names and hosts
     use `fitText`, which ellipsizes to the available width. Each exit row shows its priority number,
     raise/lower arrows (reorder = priority), share (QR), rename, and delete.
