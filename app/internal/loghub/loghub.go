@@ -101,6 +101,9 @@ func (f Filter) Allows(record Record) bool {
 	if !f.Shows(record.Level) || f.Module != "" && f.Module != record.Module {
 		return false
 	}
+	if strings.TrimSpace(f.Query) == "" {
+		return true // formatting every record just to match nothing is the costly part
+	}
 	return TextMatches(record.String(), f.Query)
 }
 

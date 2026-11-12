@@ -4,6 +4,7 @@ package gui
 
 import (
 	"encoding/base64"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
@@ -474,6 +475,7 @@ func TestActivityErrorBadgeAndDetails(t *testing.T) {
 		t.Fatal("opening Activity should clear the error badge")
 	}
 	d.addLog(loghub.Record{Level: loghub.Error, Module: "route", Message: "seen while open"})
+	d.flushLogs()
 	if d.errorBadge.box.Visible() {
 		t.Fatal("errors shown on the open Activity page are not unseen")
 	}
@@ -494,5 +496,29 @@ func TestActivityErrorBadgeAndDetails(t *testing.T) {
 	})
 	if len(checks) != 1 {
 		t.Fatal("severity toggle should count errors")
+	}
+}
+
+func TestLogArrivalsAreBatched(t *testing.T) {
+	d := routeTestDashboard(t)
+	scheduled := 0
+	d.scheduleFlush = func() { scheduled++ }
+	d.navigate("activity")
+	for i := 0; i < 50; i++ {
+		d.addLog(loghub.Record{Level: loghub.Info, Module: "route", Message: fmt.Sprint("record ", i)})
+	}
+	if scheduled != 1 {
+		t.Fatalf("50 arrivals scheduled %d flushes, want 1", scheduled)
+	}
+	if d.logList.Length() != 0 {
+		t.Fatal("the list redrew before the batched flush")
+	}
+	d.flushLogs()
+	if d.logList.Length() != 50 {
+		t.Fatalf("after flush the list shows %d records", d.logList.Length())
+	}
+	d.addLog(loghub.Record{Level: loghub.Info, Module: "route", Message: "next"})
+	if scheduled != 2 {
+		t.Fatal("a record after a flush should schedule the next one")
 	}
 }

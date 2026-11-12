@@ -60,6 +60,8 @@ type dashboard struct {
 	errorBadge      *countBadge
 	unseenErrors    int
 	logDetail       *loghub.Record
+	logFlushQueued  bool
+	scheduleFlush   func() // tests replace the timed flush
 	content         *fyne.Container
 	notice          *widget.Label
 	nav             map[string]*widget.Button
@@ -168,11 +170,28 @@ func (d *dashboard) addLog(record loghub.Record) {
 		d.unseenErrors++
 		d.errorBadge.set(d.unseenErrors)
 	}
-	if d.page == "activity" && d.logRefresh != nil {
-		d.logRefresh()
-		if !d.pauseLog {
-			d.logList.ScrollToBottom()
+	if d.page == "activity" && d.logRefresh != nil && !d.logFlushQueued {
+		d.logFlushQueued = true
+		if d.scheduleFlush != nil {
+			d.scheduleFlush()
+		} else {
+			time.AfterFunc(logFlushGap, func() { fyne.Do(d.flushLogs) })
 		}
+	}
+}
+
+// logFlushGap batches arriving records: redrawing the list per record kept the
+// UI thread busy whenever traffic produced records faster than it could paint.
+const logFlushGap = 250 * time.Millisecond
+
+func (d *dashboard) flushLogs() {
+	d.logFlushQueued = false
+	if d.page != "activity" || d.logRefresh == nil {
+		return
+	}
+	d.logRefresh()
+	if !d.pauseLog {
+		d.logList.ScrollToBottom()
 	}
 }
 

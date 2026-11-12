@@ -25,7 +25,7 @@ func routeTestDashboard(t *testing.T) *dashboard {
 	t.Cleanup(a.Quit)
 	w := a.NewWindow("Routes test")
 	w.Resize(fyne.NewSize(900, 640))
-	d := &dashboard{app: a, window: w, page: "routes", nav: map[string]*widget.Button{}}
+	d := &dashboard{app: a, window: w, page: "routes", nav: map[string]*widget.Button{}, scheduleFlush: func() {}}
 	d.buildShell()
 	d.state = &store.State{ListenPort: 2084, Slots: []store.Slot{
 		{Name: "first", Port: 2084, Enabled: true},

@@ -212,7 +212,7 @@ func (r *logRow) CreateRenderer() fyne.WidgetRenderer {
 	}
 	badge := canvas.NewRectangle(colorControl)
 	badge.CornerRadius = 4
-	return &logRowRenderer{row: r, when: text(12, fyne.TextStyle{Monospace: true}), badge: badge,
+	return &logRowRenderer{row: r, when: text(12, fyne.TextStyle{}), badge: badge,
 		level: text(10, fyne.TextStyle{Bold: true}), origin: text(12, fyne.TextStyle{}), message: text(12, fyne.TextStyle{})}
 }
 
@@ -220,7 +220,7 @@ type logRowRenderer struct {
 	row                          *logRow
 	when, level, origin, message *canvas.Text
 	badge                        *canvas.Rectangle
-	full                         [2]string // untruncated origin and message
+	full                         string // untruncated origin
 }
 
 const (
@@ -230,34 +230,39 @@ const (
 
 func (r *logRowRenderer) MinSize() fyne.Size { return fyne.NewSize(240, 22) }
 
+// logTimeWidth is measured once; every timestamp has the same digits layout.
+var logTimeWidth float32
+
 func (r *logRowRenderer) Layout(size fyne.Size) {
 	place := func(t *canvas.Text, x float32) {
-		h := t.MinSize().Height
-		t.Move(fyne.NewPos(x, (size.Height-h)/2))
-		t.Resize(fyne.NewSize(t.MinSize().Width, h))
+		textSize := t.MinSize()
+		t.Move(fyne.NewPos(x, (size.Height-textSize.Height)/2))
+		t.Resize(textSize)
 	}
-	fit := func(t *canvas.Text, value string, width float32) {
-		t.Text = fitRunes(value, max(0, width), func(s string) float32 {
-			return fyne.MeasureText(s, t.TextSize, t.TextStyle).Width
-		})
+	if logTimeWidth == 0 {
+		logTimeWidth = fyne.MeasureText("00:00:00.000", 12, fyne.TextStyle{}).Width
 	}
 	x := float32(0)
 	place(r.when, x)
-	x += fyne.MeasureText("00:00:00.000", 12, fyne.TextStyle{Monospace: true}).Width + logGap
+	x += logTimeWidth + logGap
 	r.badge.Resize(fyne.NewSize(logBadgeWidth, 16))
 	r.badge.Move(fyne.NewPos(x, (size.Height-16)/2))
-	levelWidth := r.level.MinSize().Width
-	place(r.level, x+(logBadgeWidth-levelWidth)/2)
+	place(r.level, x+(logBadgeWidth-r.level.MinSize().Width)/2)
 	x += logBadgeWidth + logGap
 	originWidth := float32(150)
 	if size.Width < 640 {
 		originWidth = 90
 	}
-	fit(r.origin, r.full[0], originWidth-logGap)
+	// Measuring prefixes is uncached text shaping, so only an overflowing origin pays for it.
+	r.origin.Text = r.full
+	if r.origin.MinSize().Width > originWidth-logGap {
+		r.origin.Text = fitRunes(r.full, originWidth-logGap, func(s string) float32 {
+			return fyne.MeasureText(s, r.origin.TextSize, r.origin.TextStyle).Width
+		})
+	}
 	place(r.origin, x)
 	x += originWidth
-	fit(r.message, r.full[1], size.Width-x)
-	place(r.message, x)
+	place(r.message, x) // the list clips what runs past its edge
 }
 
 func (r *logRowRenderer) Refresh() {
@@ -267,9 +272,11 @@ func (r *logRowRenderer) Refresh() {
 	r.level.Text, r.level.Color = record.LevelLabel(), badge
 	r.badge.FillColor = bg
 	r.origin.Color = colorMuted
-	r.message.Color = message
-	r.full = [2]string{record.Origin(), strings.Join(strings.Fields(record.Message), " ")}
-	r.Layout(r.row.Size())
+	r.message.Text, r.message.Color = strings.Join(strings.Fields(record.Message), " "), message
+	r.full = record.Origin()
+	if size := r.row.Size(); size.Width > 0 {
+		r.Layout(size)
+	}
 	for _, object := range r.Objects() {
 		object.Refresh()
 	}

@@ -18,7 +18,11 @@ or a **system-wide TUN** — with automatic tiered failover.
     same track/thumb shape and state colors as Android, rather than a drag-only slider. Activity (`activity.go`) fills the
     page height (no outer scroll): a toolbar with text/module filters (` & ` AND, ` | ` OR) and severity toggles that
     show per-level counts, then a virtualized 2000-record list drawn in columns (`logRow`: time, level badge, origin,
-    message; warnings amber). Clicking a record opens a details strip with the full message and Copy. Rows shift as
+    message; warnings amber). Arriving records redraw the list in batches (`addLog` → `flushLogs`, at most every `logFlushGap`); one
+    redraw per record kept the UI thread busy under traffic (~70% of a core vs ~8% batched, measured with a curl flood).
+    Rows never measure text prefixes, which is uncached shaping: the message overflows and the list clips it, and only an
+    overflowing origin is ellipsized. `loghub.Filter.Allows` formats a record only when a search query needs it.
+    Clicking a record opens a details strip with the full message and Copy. Rows shift as
     records arrive, so the list unselects at once and the strip holds the choice. "Copy shown" copies the filtered
     records. Errors arriving off the Activity page raise a red count badge on its sidebar item (`addLog`,
     `countBadge`). Settings (gear icon) sits at the bottom of the sidebar, above the engine/version footer.
