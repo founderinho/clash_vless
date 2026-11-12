@@ -3,12 +3,14 @@
 package gui
 
 import (
+	"fmt"
 	"image/color"
 	"strings"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
 )
 
@@ -157,4 +159,77 @@ func (l *titleTagsLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 		size.Height = max(size.Height, tag.MinSize().Height)
 	}
 	return fyne.NewSize(size.Width+l.tagsWidth(objects), size.Height)
+}
+
+// countBadge is a small red counter that hides itself at zero.
+type countBadge struct {
+	box  *fyne.Container
+	text *canvas.Text
+}
+
+func newCountBadge() *countBadge {
+	text := canvas.NewText("", colorBackground)
+	text.TextSize = 10
+	text.TextStyle = fyne.TextStyle{Bold: true}
+	bg := canvas.NewRectangle(colorDanger)
+	bg.CornerRadius = 8
+	b := &countBadge{box: container.NewStack(bg, inset(container.NewCenter(text), 1, 1, 5, 5)), text: text}
+	b.box.Hide()
+	return b
+}
+
+func (b *countBadge) set(count int) {
+	if b == nil {
+		return
+	}
+	if count <= 0 {
+		b.box.Hide()
+		return
+	}
+	b.text.Text = fmt.Sprint(count)
+	if count > 99 {
+		b.text.Text = "99+"
+	}
+	b.text.Refresh()
+	b.box.Show()
+	b.box.Refresh()
+}
+
+// clickable makes any content a pointer-cursor tap target with a hover tint.
+type clickable struct {
+	widget.BaseWidget
+	content fyne.CanvasObject
+	onTap   func()
+	bg      *canvas.Rectangle
+}
+
+func newClickable(content fyne.CanvasObject, tapped func()) *clickable {
+	c := &clickable{content: content, onTap: tapped, bg: canvas.NewRectangle(color.Transparent)}
+	c.bg.CornerRadius = 4
+	c.ExtendBaseWidget(c)
+	return c
+}
+
+func (c *clickable) Tapped(*fyne.PointEvent) {
+	if c.onTap != nil {
+		c.onTap()
+	}
+}
+
+func (c *clickable) Cursor() desktop.Cursor { return desktop.PointerCursor }
+
+func (c *clickable) MouseIn(*desktop.MouseEvent) {
+	c.bg.FillColor = colorControl
+	c.bg.Refresh()
+}
+
+func (c *clickable) MouseMoved(*desktop.MouseEvent) {}
+
+func (c *clickable) MouseOut() {
+	c.bg.FillColor = color.Transparent
+	c.bg.Refresh()
+}
+
+func (c *clickable) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(container.NewStack(c.bg, inset(c.content, 4, 4, 4, 4)))
 }

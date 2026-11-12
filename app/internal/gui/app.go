@@ -56,6 +56,10 @@ type dashboard struct {
 	nodeQuery       string
 	nodeSort        string
 	nodesOnline     bool
+	collapsedSubs   map[string]bool // provider URL → node group folded by the user
+	errorBadge      *countBadge
+	unseenErrors    int
+	logDetail       *loghub.Record
 	content         *fyne.Container
 	notice          *widget.Label
 	nav             map[string]*widget.Button
@@ -102,16 +106,7 @@ func (d *dashboard) readEvents() {
 				if event.Record != nil {
 					record = *event.Record
 				}
-				d.logs = append(d.logs, record)
-				if len(d.logs) > 2000 {
-					d.logs = d.logs[len(d.logs)-2000:]
-				}
-				if d.page == "activity" && d.logRefresh != nil {
-					d.logRefresh()
-					if !d.pauseLog {
-						d.logList.ScrollToBottom()
-					}
-				}
+				d.addLog(record)
 			}
 		})
 	}
@@ -123,35 +118,30 @@ func (d *dashboard) buildShell() {
 	logo.FillMode = canvas.ImageFillContain
 	logo.SetMinSize(fyne.NewSize(30, 30))
 	brand := container.NewHBox(logo, headingText(branding.Name, 16))
-	items := make([]fyne.CanvasObject, 0, 5)
-	for _, item := range []struct {
-		page string
-		name string
-		icon string
-	}{
-		{"overview", "Overview", "overview"},
-		{"subscriptions", "Subscriptions", "subscriptions"},
-		{"routes", "Exit routes", "routes"},
-		{"activity", "Activity", "activity"},
-		{"settings", "Settings", "settings"},
-	} {
-		page := item.page
-		button := widget.NewButtonWithIcon(item.name, brandIcon(item.icon), func() { d.navigate(page) })
+	navButton := func(page, name string) *widget.Button {
+		button := widget.NewButtonWithIcon(name, brandIcon(page), func() { d.navigate(page) })
 		button.Alignment = widget.ButtonAlignLeading
 		button.Importance = widget.LowImportance
 		d.nav[page] = button
-		items = append(items, button)
+		return button
+	}
+	d.errorBadge = newCountBadge()
+	items := []fyne.CanvasObject{
+		navButton("overview", "Overview"),
+		navButton("subscriptions", "Subscriptions"),
+		navButton("routes", "Exit routes"),
+		container.NewStack(navButton("activity", "Activity"), inset(container.NewHBox(layout.NewSpacer(), container.NewCenter(d.errorBadge.box)), 0, 0, 0, 8)),
 	}
 	mode := "Attached to daemon"
 	if d.embedded {
 		mode = "Local engine"
 	}
 	footer := container.NewVBox(
+		navButton("settings", "Settings"),
 		widget.NewSeparator(),
-		muted(mode),
-		muted("Version "+store.Version),
+		inset(container.NewVBox(muted(mode), muted("Version "+store.Version)), 0, 0, 4, 4),
 	)
-	sidebarContent := container.NewBorder(inset(brand, 18, 14, 12, 12), inset(footer, 10, 12, 12, 12), nil, nil,
+	sidebarContent := container.NewBorder(inset(brand, 18, 14, 12, 12), inset(footer, 8, 12, 8, 8), nil, nil,
 		inset(container.NewVBox(items...), 8, 8, 8, 8))
 	background := canvas.NewRectangle(colorSidebar)
 	sidebar := container.New(&widthLayout{width: 154}, container.NewStack(background, sidebarContent))
@@ -167,6 +157,23 @@ func (d *dashboard) buildShell() {
 	main := container.NewBorder(nil, statusBar, nil, nil, d.content)
 	d.tips = newTooltipLayer()
 	d.window.SetContent(container.NewStack(container.NewBorder(nil, nil, sidebar, nil, main), d.tips.layer))
+}
+
+func (d *dashboard) addLog(record loghub.Record) {
+	d.logs = append(d.logs, record)
+	if len(d.logs) > 2000 {
+		d.logs = d.logs[len(d.logs)-2000:]
+	}
+	if record.Level == loghub.Error && d.page != "activity" {
+		d.unseenErrors++
+		d.errorBadge.set(d.unseenErrors)
+	}
+	if d.page == "activity" && d.logRefresh != nil {
+		d.logRefresh()
+		if !d.pauseLog {
+			d.logList.ScrollToBottom()
+		}
+	}
 }
 
 // statusRenderGap bounds how often status events rebuild the page: a rebuild
@@ -214,6 +221,10 @@ func (d *dashboard) statusKey() string {
 
 func (d *dashboard) navigate(page string) {
 	d.page = page
+	if page == "activity" {
+		d.unseenErrors = 0
+		d.errorBadge.set(0)
+	}
 	d.render()
 }
 
@@ -273,10 +284,15 @@ func (d *dashboard) render() {
 		canvas.NewRectangle(colorSidebar),
 		inset(headerContent, 10, headerBottomPadding, 16, 16),
 	)
-	scroll := container.NewVScroll(inset(body, 12, 16, 16, 16))
-	d.content.Objects = []fyne.CanvasObject{container.NewBorder(header, nil, nil, nil, scroll)}
+	var scroll *container.Scroll
+	area := inset(body, 12, 16, 16, 16)
+	if d.page != "activity" { // the log list scrolls itself and fills the page
+		scroll = container.NewVScroll(area)
+		area = container.NewStack(scroll)
+	}
+	d.content.Objects = []fyne.CanvasObject{container.NewBorder(header, nil, nil, nil, area)}
 	d.content.Refresh()
-	if d.page == prevPage && prevScroll != nil {
+	if d.page == prevPage && prevScroll != nil && scroll != nil {
 		scroll.ScrollToOffset(prevScroll.Offset)
 	}
 	if d.page == prevPage && prevTabs != nil && d.tabsScroll != nil {

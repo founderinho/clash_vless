@@ -15,8 +15,13 @@ or a **system-wide TUN** — with automatic tiered failover.
   - `internal/gui` — native Fyne desktop GUI. `render()` rebuilds the page on every status event, so it restores the
     scroll offset and the focused `textInput`; anything typed must be stored by its `changed` callback or it's lost.
     `connectionSummary` says "Connected" only when `Status.TunUp` is true: a working SOCKS route says nothing about the VPN. Its connection control is a clickable, pointer-cursor switch with the
-    same track/thumb shape and state colors as Android, rather than a drag-only slider. Activity is a virtualized,
-    2000-record view with severity/module/text filters (` & ` AND, ` | ` OR), presets, and click-to-copy.
+    same track/thumb shape and state colors as Android, rather than a drag-only slider. Activity (`activity.go`) fills the
+    page height (no outer scroll): a toolbar with text/module filters (` & ` AND, ` | ` OR) and severity toggles that
+    show per-level counts, then a virtualized 2000-record list drawn in columns (`logRow`: time, level badge, origin,
+    message; warnings amber). Clicking a record opens a details strip with the full message and Copy. Rows shift as
+    records arrive, so the list unselects at once and the strip holds the choice. "Copy shown" copies the filtered
+    records. Errors arriving off the Activity page raise a red count badge on its sidebar item (`addLog`,
+    `countBadge`). Settings (gear icon) sits at the bottom of the sidebar, above the engine/version footer.
     Exit routes keeps its boxed Routing compatibility note in the fixed header below Recheck,
     with a small danger-colored bordered `!`; the theme hover color is a darker shade of mint.
     Modal forms pause page rebuilding while state/status events continue updating the model;
@@ -54,7 +59,7 @@ or a **system-wide TUN** — with automatic tiered failover.
     `statusRenderGap`, and only when the part the page shows changed (`statusKey`). A rebuild between press and
     release drops the click. Settings fields keep unsaved text in `drafts` across rebuilds and validate before
     saving (IP, IPv4 CIDR, MTU 576–9000, first-hop port collisions). The "Listen port" row is gone: slot ports are
-    edited per slot. Activity has a "Follow new records" toggle.
+    edited per slot. Activity has a "Follow new" toggle.
     **Overview** (`overview.go`) is grouped into cards (`section`: title, subtitle, header action). A "Finish setup"
     checklist appears while no usable exit exists. Connection shows the headline, a plain-words hint
     (`connectionHint`), the route line, Latency / Route type / Slots serving, and a VPN error box (`alertBox`).
@@ -62,10 +67,13 @@ or a **system-wide TUN** — with automatic tiered failover.
     (`connectHost`: a wildcard bind becomes `127.0.0.1`). Entry pools are side-by-side cards with an online meter, the
     average failure rate, the fastest node, and the entry in use (`entriesInUse`).
     **Subscriptions** (`subscriptions.go`): provider rows carry an Active/Not used/Fetch failed tag, country/bypass
-    counts, online count, and a relative fetch time (`ago`). The node list filters as you type and with "Online only",
+    counts, online count, and a relative fetch time (`ago`). The node list is grouped by provider (`nodeGroups`; probes matched by
+    name and pool, leftovers under "Other nodes"). Each group folds from its header (`clickable`). Unused providers
+    start folded and list their nodes unchecked, without Pin. Folding is kept per provider URL in `collapsedSubs`.
+    It filters as you type and with "Online only",
     by hiding rows in place without rebuilding the page. It sorts by `sortProbes`: Recommended, which mirrors the
     engine's online → stability band → throughput → ping order, then latency, name, or provider order. Rows show
-    In use / Pinned / Testing speed / latency / Mbps / failure-rate tags, and a pinned node gets an Unpin banner.
+    In use / Pinned / Testing speed beside the name, then latency / Mbps / failure-rate tags, and a pinned node gets an Unpin banner.
     Names next to tags use `titleWithTags`, which shrinks only the name.
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
     desktop, and Android. `control.Event.Record` carries structured fields while `Line` preserves compatibility.

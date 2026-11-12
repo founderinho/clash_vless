@@ -220,56 +220,175 @@ type nodeEntry struct {
 	ok     bool
 }
 
+type poolKey struct {
+	bypass bool
+	name   string
+}
+
+// nodeGroup is one provider's nodes; probes exist only for nodes the engine checks.
+type nodeGroup struct {
+	key, name string
+	tag       fyne.CanvasObject
+	probed    bool // the provider's nodes are in the engine's pools
+	pools     [2][]engine.Probe
+	unchecked [2][]engine.Probe
+}
+
+func (d *dashboard) nodeGroups() []*nodeGroup {
+	probes := map[poolKey]engine.Probe{}
+	for bypass, pool := range [2][]engine.Probe{d.status.Country, d.status.Bypass} {
+		for _, probe := range pool {
+			probes[poolKey{bypass == 1, probe.Name}] = probe
+		}
+	}
+	used := map[poolKey]bool{}
+	var groups []*nodeGroup
+	for index, sub := range d.state.Subs {
+		active := d.state.AutoSelect || d.state.ActiveSub == index
+		group := &nodeGroup{key: sub.URL, name: sub.Name, probed: active, tag: neutralChip("Not used")}
+		if active {
+			group.tag = tintChip("Active", colorAccent)
+		}
+		for _, node := range sub.Nodes {
+			pool, key := 0, poolKey{node.Whitelist, node.Name}
+			if node.Whitelist {
+				pool = 1
+			}
+			if probe, ok := probes[key]; ok && active {
+				group.pools[pool] = append(group.pools[pool], probe)
+				used[key] = true
+			} else {
+				group.unchecked[pool] = append(group.unchecked[pool], engine.Probe{Name: node.Name, Server: node.Server, Whitelist: node.Whitelist})
+			}
+		}
+		groups = append(groups, group)
+	}
+	other := &nodeGroup{key: "", name: "Other nodes", probed: true, tag: neutralChip("Not in a provider")}
+	for bypass, pool := range [2][]engine.Probe{d.status.Country, d.status.Bypass} {
+		for _, probe := range pool {
+			if !used[poolKey{bypass == 1, probe.Name}] {
+				other.pools[bypass] = append(other.pools[bypass], probe)
+			}
+		}
+	}
+	if len(other.pools[0])+len(other.pools[1]) > 0 {
+		groups = append(groups, other)
+	}
+	return groups
+}
+
+func (d *dashboard) groupCollapsed(group *nodeGroup) bool {
+	if collapsed, ok := d.collapsedSubs[group.key]; ok {
+		return collapsed
+	}
+	return !group.probed
+}
+
 func (d *dashboard) nodesPanel() fyne.CanvasObject {
 	if d.nodeSort == "" {
 		d.nodeSort = sortRecommended
 	}
+	if d.collapsedSubs == nil {
+		d.collapsedSubs = map[string]bool{}
+	}
 	inUse := entriesInUse(d.status)
 	var entries []nodeEntry
-	var groups []fyne.CanvasObject
+	var groupViews []fyne.CanvasObject
 	var refreshers []func() int
-	for _, pool := range []struct {
-		name   string
-		tier   int
-		probes []engine.Probe
-	}{
-		{"Country exits", 2, d.status.Country},
-		{"Bypass nodes", 3, d.status.Bypass},
-	} {
-		up := 0
-		for _, probe := range pool.probes {
-			if probe.OK {
-				up++
+	for _, group := range d.nodeGroups() {
+		group := group
+		body := container.NewVBox()
+		first := len(entries)
+		total, up := 0, 0
+		for pool, title := range [2]string{"Country exits · T2", "Bypass nodes · T3"} {
+			probes := sortProbes(group.pools[pool], d.nodeSort)
+			unchecked := group.unchecked[pool]
+			if d.nodeSort == sortName {
+				unchecked = sortProbes(unchecked, sortName)
+			}
+			if len(probes)+len(unchecked) == 0 {
+				continue
+			}
+			heading := canvas.NewText(strings.ToUpper(title), colorMuted)
+			heading.TextSize = 10
+			heading.TextStyle = fyne.TextStyle{Bold: true}
+			body.Add(inset(heading, 8, 2, 0, 0))
+			add := func(probe engine.Probe, row fyne.CanvasObject) {
+				entry := nodeEntry{row: container.NewVBox(widget.NewSeparator(), row), search: strings.ToLower(probe.Name + " " + probe.Server), ok: probe.OK}
+				entries = append(entries, entry)
+				body.Add(entry.row)
+			}
+			for _, probe := range probes {
+				total++
+				if probe.OK {
+					up++
+				}
+				add(probe, d.nodeRow(probe, inUse[probe.Name], ""))
+			}
+			note := "Not checked yet"
+			if !group.probed {
+				note = "Provider not in use"
+			}
+			for _, probe := range unchecked {
+				total++
+				add(probe, d.nodeRow(probe, false, note))
 			}
 		}
-		head := flexRow(container.NewHBox(strong(pool.name), neutralChip(fmt.Sprintf("T%d", pool.tier))),
-			muted(fmt.Sprintf("%d of %d online", up, len(pool.probes))))
 		empty := muted("No nodes match")
-		if len(pool.probes) == 0 {
-			empty = muted("No nodes in this pool")
+		body.Add(empty)
+
+		counts := muted("")
+		chevron := canvas.NewImageFromResource(theme.MenuDropDownIcon())
+		chevron.SetMinSize(fyne.NewSize(18, 18))
+		setChevron := func() {
+			chevron.Resource = theme.MenuDropDownIcon()
+			if d.groupCollapsed(group) {
+				chevron.Resource = theme.MenuExpandIcon()
+			}
+			chevron.Refresh()
 		}
-		list := container.NewVBox()
-		first := len(entries)
-		for _, probe := range sortProbes(pool.probes, d.nodeSort) {
-			row := d.nodeRow(probe, inUse[probe.Name])
-			entries = append(entries, nodeEntry{row: container.NewVBox(widget.NewSeparator(), row), search: strings.ToLower(probe.Name + " " + probe.Server), ok: probe.OK})
-			list.Add(entries[len(entries)-1].row)
-		}
-		poolEntries := entries[first:]
+		setChevron()
+		body.Hidden = d.groupCollapsed(group)
+		header := newClickable(container.NewBorder(nil, nil, inset(chevron, 0, 0, 0, 6), counts,
+			titleWithTags(newFitText(group.name, colorText, 14, true), group.tag)), func() {
+			d.collapsedSubs[group.key] = !d.groupCollapsed(group)
+			body.Hidden = d.groupCollapsed(group)
+			setChevron()
+			body.Refresh()
+		})
+
+		groupEntries := entries[first:]
+		filtering := func() bool { return strings.TrimSpace(d.nodeQuery) != "" || d.nodesOnline }
 		refreshers = append(refreshers, func() int {
 			shown := 0
-			for _, entry := range poolEntries {
-				if !entry.row.Visible() {
-					continue
+			for _, entry := range groupEntries {
+				if entry.row.Visible() {
+					shown++
 				}
-				shown++
 			}
-			empty.Hidden = shown > 0
-			list.Refresh()
+			switch {
+			case total == 0:
+				counts.Text = "no nodes"
+			case !group.probed:
+				counts.Text = fmt.Sprintf("%d nodes · not checked", total)
+			default:
+				counts.Text = fmt.Sprintf("%d of %d online", up, total)
+			}
+			if filtering() {
+				counts.Text = fmt.Sprintf("%d match · ", shown) + counts.Text
+			}
+			counts.Refresh()
+			empty.Hidden = shown > 0 || total == 0
+			if total == 0 {
+				empty.Text, empty.Hidden = "This provider has no nodes yet", false
+			}
 			empty.Refresh()
+			body.Refresh()
 			return shown
 		})
-		groups = append(groups, inset(container.NewVBox(head, list, empty), 6, 0, 0, 0))
+		bg := canvas.NewRectangle(colorBackground)
+		bg.CornerRadius = 6
+		groupViews = append(groupViews, container.NewStack(bg, inset(container.NewVBox(header, body), 4, 6, 6, 6)))
 	}
 
 	summary := muted("")
@@ -311,9 +430,12 @@ func (d *dashboard) nodesPanel() fyne.CanvasObject {
 	if sweep := d.status.Sweep; sweep.Node != "" {
 		items = append(items, newFitText(fmt.Sprintf("Speed test %d / %d · testing %s", sweep.Done+1, sweep.Total, sweep.Node), colorMuted, 12, false))
 	}
-	items = append(items, groups...)
+	if len(groupViews) == 0 {
+		items = append(items, muted("No entry nodes yet. Add a subscription above."))
+	}
+	items = append(items, groupViews...)
 	items = append(items, summary)
-	return section("Entry nodes", "Hops for T2/T3 routes. Pin a node to stop automatic selection.", nil, items...)
+	return section("Entry nodes", "Grouped by provider. Pin a node to stop automatic selection.", nil, items...)
 }
 
 func (d *dashboard) pinBanner(pin string) fyne.CanvasObject {
@@ -330,25 +452,30 @@ func (d *dashboard) pinBanner(pin string) fyne.CanvasObject {
 	return container.NewStack(box, inset(flexRow(text, unpin), 6, 6, 10, 6))
 }
 
-func (d *dashboard) nodeRow(probe engine.Probe, inUse bool) fyne.CanvasObject {
+// nodeRow shows a checked node, or with a note an unchecked one (no stats, no pin).
+func (d *dashboard) nodeRow(probe engine.Probe, inUse bool, note string) fyne.CanvasObject {
 	pinned := d.state.PinEntry == probe.Name
 	dotColor := color.Color(colorDanger)
 	if probe.OK {
 		dotColor = colorAccent
 	}
-	var tags []fyne.CanvasObject
+	var badges, tags []fyne.CanvasObject
 	if inUse {
-		tags = append(tags, tintChip("In use", colorAccent))
+		badges = append(badges, tintChip("In use", colorAccent))
 	}
 	if pinned {
-		tags = append(tags, tintChip("Pinned", colorWarning))
+		badges = append(badges, tintChip("Pinned", colorWarning))
 	}
 	if d.status.Sweep.Node == probe.Name {
-		tags = append(tags, tintChip("Testing speed…", branding.AccentBlue))
+		badges = append(badges, tintChip("Testing speed…", branding.AccentBlue))
 	}
-	if probe.OK {
+	switch {
+	case note != "":
+		dotColor = colorMuted
+		tags = append(tags, neutralChip(note))
+	case probe.OK:
 		tags = append(tags, neutralChip(milliseconds(probe.Latency)))
-	} else {
+	default:
 		tags = append(tags, tintChip("Offline", colorDanger))
 	}
 	if probe.SpeedN > 0 {
@@ -366,7 +493,7 @@ func (d *dashboard) nodeRow(probe engine.Probe, inUse bool) fyne.CanvasObject {
 		nameColor = colorMuted
 	}
 	info := container.New(layout.NewCustomPaddedVBoxLayout(3),
-		newFitText(probe.Name, nameColor, 13, inUse || pinned),
+		titleWithTags(newFitText(probe.Name, nameColor, 13, inUse || pinned), badges...),
 		container.NewBorder(nil, nil, container.NewHBox(tags...), nil, newFitText(probe.Server, colorMuted, 12, false)),
 	)
 	name := probe.Name
@@ -388,5 +515,9 @@ func (d *dashboard) nodeRow(probe engine.Probe, inUse bool) fyne.CanvasObject {
 	if pinned {
 		pin = widget.NewButton("Unpin", func() { d.patch(map[string]any{"pin_entry": ""}) })
 	}
-	return container.NewBorder(nil, nil, inset(statusDot(dotColor), 0, 0, 2, 10), container.NewHBox(share, pin), info)
+	actions := container.NewHBox(share, pin)
+	if note != "" && !pinned {
+		actions = container.NewHBox(share)
+	}
+	return container.NewBorder(nil, nil, inset(statusDot(dotColor), 0, 0, 2, 10), actions, info)
 }

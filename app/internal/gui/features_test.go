@@ -18,6 +18,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"clashvless/internal/engine"
+	"clashvless/internal/loghub"
 	"clashvless/internal/store"
 )
 
@@ -407,5 +408,91 @@ func TestOverviewAndSubscriptionsStayNarrow(t *testing.T) {
 		if width := d.window.Content().MinSize().Width; width > 760 {
 			t.Fatalf("%s: long names force window width %.0f", page, width)
 		}
+	}
+}
+
+func visibleFitTexts(root fyne.CanvasObject, names ...string) []string {
+	want := map[string]bool{}
+	for _, name := range names {
+		want[name] = true
+	}
+	var shown []string
+	findRouteObjects(root, func(obj fyne.CanvasObject) bool {
+		if !obj.Visible() {
+			return true
+		}
+		if text, ok := obj.(*fitText); ok && want[text.text] {
+			shown = append(shown, text.text)
+		}
+		return false
+	})
+	return shown
+}
+
+func TestNodesGroupedByProviderAndCollapsible(t *testing.T) {
+	d := routeTestDashboard(t)
+	d.state.Subs = []store.Subscription{
+		{Name: "Main provider", URL: "https://a", Nodes: []store.Node{{Name: "DE"}, {Name: "SE", Whitelist: true}}},
+		{Name: "Spare provider", URL: "https://b", Nodes: []store.Node{{Name: "NL"}}},
+	}
+	d.state.ActiveSub = 0
+	d.status.Country = []engine.Probe{{Name: "DE", OK: true}, {Name: "XX", OK: true}}
+	d.status.Bypass = []engine.Probe{{Name: "SE", OK: false}}
+	d.navigate("subscriptions")
+
+	headers := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool { _, ok := obj.(*clickable); return ok })
+	if len(headers) != 3 {
+		t.Fatalf("expected Main, Spare and Other groups, got %d headers", len(headers))
+	}
+	if got := strings.Join(visibleFitTexts(d.content, "DE", "SE", "NL", "XX"), ","); got != "DE,SE,XX" {
+		t.Fatalf("inactive provider should start folded, visible = %s", got)
+	}
+	test.Tap(headers[0].(*clickable))
+	test.Tap(headers[1].(*clickable))
+	if got := strings.Join(visibleFitTexts(d.content, "DE", "SE", "NL", "XX"), ","); got != "NL,XX" {
+		t.Fatalf("after toggling both providers, visible = %s", got)
+	}
+	d.render()
+	if got := strings.Join(visibleFitTexts(d.content, "DE", "SE", "NL", "XX"), ","); got != "NL,XX" {
+		t.Fatalf("folding was lost on rebuild, visible = %s", got)
+	}
+	if !routeHasText(d.content, "Provider not in use") {
+		t.Fatal("unchecked nodes of an unused provider should say so")
+	}
+}
+
+func TestActivityErrorBadgeAndDetails(t *testing.T) {
+	d := routeTestDashboard(t)
+	d.navigate("overview")
+	d.addLog(loghub.Record{Level: loghub.Info, Module: "route", Message: "fine"})
+	d.addLog(loghub.Record{Level: loghub.Error, Module: "route", Message: "exit refused the handshake"})
+	if !d.errorBadge.box.Visible() || d.errorBadge.text.Text != "1" {
+		t.Fatalf("badge after one error: visible=%t text=%q", d.errorBadge.box.Visible(), d.errorBadge.text.Text)
+	}
+	d.navigate("activity")
+	if d.errorBadge.box.Visible() {
+		t.Fatal("opening Activity should clear the error badge")
+	}
+	d.addLog(loghub.Record{Level: loghub.Error, Module: "route", Message: "seen while open"})
+	if d.errorBadge.box.Visible() {
+		t.Fatal("errors shown on the open Activity page are not unseen")
+	}
+	d.logList.Select(1)
+	if d.logDetail == nil || d.logDetail.Message != "exit refused the handshake" {
+		t.Fatalf("details = %+v", d.logDetail)
+	}
+	labels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		label, ok := obj.(*widget.Label)
+		return ok && label.Text == "exit refused the handshake"
+	})
+	if len(labels) != 1 {
+		t.Fatal("details strip does not show the full message")
+	}
+	checks := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		check, ok := obj.(*widget.Check)
+		return ok && check.Text == "Errors 2"
+	})
+	if len(checks) != 1 {
+		t.Fatal("severity toggle should count errors")
 	}
 }

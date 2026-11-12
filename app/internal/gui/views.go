@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -18,7 +17,6 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"clashvless/internal/engine"
-	"clashvless/internal/loghub"
 	"clashvless/internal/store"
 )
 
@@ -369,126 +367,6 @@ func (d *dashboard) removeSlot(slotIndex int) {
 		d.state.Slots = slots
 		d.patch(map[string]any{"slots": slots})
 	})
-}
-
-func (d *dashboard) activityView() fyne.CanvasObject {
-	visible := []loghub.Record{}
-	summary := muted("")
-	var list *widget.List
-	refresh := func() {
-		visible = visible[:0]
-		for _, record := range d.logs {
-			if d.logFilter.Allows(record) {
-				visible = append(visible, record)
-			}
-		}
-		summary.Text = fmt.Sprintf("%d of %d records · click a row to copy", len(visible), len(d.logs))
-		summary.Refresh()
-		if list != nil {
-			list.Refresh()
-		}
-	}
-	list = widget.NewList(
-		func() int { return len(visible) },
-		func() fyne.CanvasObject { return &canvas.Text{TextSize: 12} },
-		func(id widget.ListItemID, object fyne.CanvasObject) {
-			text := object.(*canvas.Text)
-			record := visible[id]
-			text.Text = record.String()
-			text.Color = colorMuted
-			switch record.Level {
-			case loghub.Info:
-				text.Color = colorText
-			case loghub.Warning:
-				text.Color = colorAccent
-			case loghub.Error:
-				text.Color = colorDanger
-			}
-			text.Refresh()
-		},
-	)
-	list.OnSelected = func(id widget.ListItemID) {
-		d.app.Clipboard().SetContent(visible[id].String())
-		d.notify("Log record copied")
-		list.Unselect(id)
-	}
-	d.logList, d.logRefresh = list, refresh
-
-	query := d.textInput("log", "Search: route & failed | timeout", d.logFilter.Query, func(value string) { d.logFilter.Query = value; refresh() })
-
-	modules := []string{"All modules"}
-	seen := map[string]bool{}
-	for _, record := range d.logs {
-		if !seen[record.Module] {
-			seen[record.Module] = true
-			modules = append(modules, record.Module)
-		}
-	}
-	sort.Strings(modules[1:])
-	module := widget.NewSelect(modules, func(value string) {
-		d.logFilter.Module = ""
-		if value != "All modules" {
-			d.logFilter.Module = value
-		}
-		refresh()
-	})
-	if d.logFilter.Module != "" {
-		module.SetSelected(d.logFilter.Module)
-	} else {
-		module.SetSelected("All modules")
-	}
-
-	levels := container.NewHBox()
-	setLevels := func(shown map[loghub.Level]bool) {
-		d.logFilter.Levels = shown
-		d.render()
-	}
-	presets := container.NewHBox(
-		widget.NewButton("Basic", func() { setLevels(loghub.DefaultFilter().Levels) }),
-		widget.NewButton("All", func() {
-			setLevels(map[loghub.Level]bool{loghub.Info: true, loghub.Warning: true, loghub.Error: true, loghub.Debug: true})
-		}),
-		widget.NewButton("Errors", func() { setLevels(map[loghub.Level]bool{loghub.Error: true}) }),
-	)
-	for _, level := range loghub.Levels {
-		level := level
-		check := widget.NewCheck(strings.ToUpper(string(level)), func(on bool) {
-			if d.logFilter.Levels == nil {
-				d.logFilter.Levels = map[loghub.Level]bool{loghub.Info: true, loghub.Warning: true, loghub.Error: true, loghub.Debug: true}
-			}
-			d.logFilter.Levels[level] = on
-			refresh()
-		})
-		check.Checked = d.logFilter.Shows(level)
-		levels.Add(check)
-	}
-	clear := widget.NewButton("Clear", func() { d.logs = nil; refresh() })
-	follow := widget.NewCheck("Follow new records", func(on bool) {
-		d.pauseLog = !on
-		if on {
-			list.ScrollToBottom()
-		}
-	})
-	follow.Checked = !d.pauseLog
-	refresh()
-	return container.NewVBox(
-		panel("Filters", "Severity, module, and text filters update instantly",
-			presets, levels, query, module,
-		),
-		panel("Activity", "Newest records are at the bottom", summary, container.New(&activityListLayout{}, list), container.NewHBox(clear, follow)),
-	)
-}
-
-type activityListLayout struct{}
-
-func (*activityListLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
-	for _, object := range objects {
-		object.Resize(size)
-	}
-}
-
-func (*activityListLayout) MinSize([]fyne.CanvasObject) fyne.Size {
-	return fyne.NewSize(320, 300)
 }
 
 // connectHost is the address a local app dials for a listener bound to host:
