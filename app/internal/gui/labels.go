@@ -117,3 +117,44 @@ func tierName(tier int) string {
 	}
 	return ""
 }
+
+// titleWithTags puts tags right after a name, shrinking only the name when space runs out.
+func titleWithTags(name *fitText, tags ...fyne.CanvasObject) fyne.CanvasObject {
+	return container.New(&titleTagsLayout{}, append([]fyne.CanvasObject{name}, tags...)...)
+}
+
+type titleTagsLayout struct{}
+
+const titleTagGap = 6
+
+func (l *titleTagsLayout) tagsWidth(objects []fyne.CanvasObject) float32 {
+	width := float32(0)
+	for _, tag := range objects[1:] {
+		width += tag.MinSize().Width + titleTagGap
+	}
+	return width
+}
+
+func (l *titleTagsLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	name := objects[0].(*fitText)
+	natural := fyne.MeasureText(name.text, name.size, fyne.TextStyle{Bold: name.bold}).Width + 1
+	nameWidth := max(name.MinSize().Width, min(natural, size.Width-l.tagsWidth(objects)))
+	name.Resize(fyne.NewSize(nameWidth, size.Height))
+	name.Move(fyne.NewPos(0, 0))
+	x := nameWidth
+	for _, tag := range objects[1:] {
+		tagSize := tag.MinSize()
+		x += titleTagGap
+		tag.Resize(tagSize)
+		tag.Move(fyne.NewPos(x, (size.Height-tagSize.Height)/2))
+		x += tagSize.Width
+	}
+}
+
+func (l *titleTagsLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	size := objects[0].MinSize()
+	for _, tag := range objects[1:] {
+		size.Height = max(size.Height, tag.MinSize().Height)
+	}
+	return fyne.NewSize(size.Width+l.tagsWidth(objects), size.Height)
+}

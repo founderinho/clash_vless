@@ -54,8 +54,19 @@ or a **system-wide TUN** — with automatic tiered failover.
     `statusRenderGap`, and only when the part the page shows changed (`statusKey`). A rebuild between press and
     release drops the click. Settings fields keep unsaved text in `drafts` across rebuilds and validate before
     saving (IP, IPv4 CIDR, MTU 576–9000, first-hop port collisions). The "Listen port" row is gone: slot ports are
-    edited per slot. Activity has a "Follow new records" toggle. Overview copies a dialable address (`connectHost`:
-    a wildcard bind becomes `127.0.0.1`) and shows each slot's first-hop port.
+    edited per slot. Activity has a "Follow new records" toggle.
+    **Overview** (`overview.go`) is grouped into cards (`section`: title, subtitle, header action). A "Finish setup"
+    checklist appears while no usable exit exists. Connection shows the headline, a plain-words hint
+    (`connectionHint`), the route line, Latency / Route type / Slots serving, and a VPN error box (`alertBox`).
+    Local endpoints lists each enabled slot with its live state and Copy / Copy hop. The copied address is dialable
+    (`connectHost`: a wildcard bind becomes `127.0.0.1`). Entry pools are side-by-side cards with an online meter, the
+    average failure rate, the fastest node, and the entry in use (`entriesInUse`).
+    **Subscriptions** (`subscriptions.go`): provider rows carry an Active/Not used/Fetch failed tag, country/bypass
+    counts, online count, and a relative fetch time (`ago`). The node list filters as you type and with "Online only",
+    by hiding rows in place without rebuilding the page. It sorts by `sortProbes`: Recommended, which mirrors the
+    engine's online → stability band → throughput → ping order, then latency, name, or provider order. Rows show
+    In use / Pinned / Testing speed / latency / Mbps / failure-rate tags, and a pinned node gets an Unpin banner.
+    Names next to tags use `titleWithTags`, which shrinks only the name.
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
     desktop, and Android. `control.Event.Record` carries structured fields while `Line` preserves compatibility.
     Both embedded and standalone daemons route xray-core through the same hub; GUI mode no longer discards xray logs.

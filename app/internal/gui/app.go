@@ -54,6 +54,8 @@ type dashboard struct {
 	selectedSlot    string
 	settingsSection string
 	nodeQuery       string
+	nodeSort        string
+	nodesOnline     bool
 	content         *fyne.Container
 	notice          *widget.Label
 	nav             map[string]*widget.Button
@@ -200,7 +202,7 @@ func (d *dashboard) statusKey() string {
 	case "settings", "activity":
 		return d.renderedStatus
 	case "subscriptions":
-		shown = []any{d.status.Country, d.status.Bypass}
+		shown = []any{d.status.Country, d.status.Bypass, d.status.Sweep.Node, entriesInUse(d.status)}
 	case "routes":
 		shown = d.status.Slots
 	default:

@@ -289,3 +289,123 @@ func TestFitRunes(t *testing.T) {
 		}
 	}
 }
+
+func TestSortProbes(t *testing.T) {
+	probes := []engine.Probe{
+		{Name: "dead", OK: false, Latency: time.Millisecond},
+		{Name: "flaky-fast", OK: true, Samples: 9, Flakiness: 40, SpeedN: 1, Speed: 90, Latency: 20 * time.Millisecond},
+		{Name: "steady-slow", OK: true, Samples: 9, Flakiness: 2, SpeedN: 1, Speed: 10, Latency: 90 * time.Millisecond},
+		{Name: "steady-fast", OK: true, Samples: 9, Flakiness: 5, SpeedN: 1, Speed: 50, Latency: 300 * time.Millisecond},
+		{Name: "steady-untested", OK: true, Samples: 9, Flakiness: 0, Latency: 10 * time.Millisecond},
+	}
+	names := func(list []engine.Probe) string {
+		out := make([]string, len(list))
+		for i, p := range list {
+			out[i] = p.Name
+		}
+		return strings.Join(out, ",")
+	}
+	for mode, want := range map[string]string{
+		sortRecommended: "steady-fast,steady-slow,steady-untested,flaky-fast,dead",
+		sortLatency:     "steady-untested,flaky-fast,steady-slow,steady-fast,dead",
+		sortName:        "dead,flaky-fast,steady-fast,steady-slow,steady-untested",
+		sortProvider:    "dead,flaky-fast,steady-slow,steady-fast,steady-untested",
+	} {
+		if got := names(sortProbes(probes, mode)); got != want {
+			t.Errorf("%s: got %s, want %s", mode, got, want)
+		}
+	}
+	if probes[0].Name != "dead" {
+		t.Fatal("sortProbes reordered its input")
+	}
+}
+
+func TestAgo(t *testing.T) {
+	now := time.Date(2026, 11, 12, 15, 0, 0, 0, time.Local)
+	for offset, want := range map[time.Duration]string{
+		10 * time.Second: "updated just now",
+		5 * time.Minute:  "updated 5 min ago",
+		3 * time.Hour:    "updated 3 h ago",
+		72 * time.Hour:   "updated 09 Nov 2026",
+	} {
+		if got := ago(now.Add(-offset), now); got != want {
+			t.Errorf("ago(-%v) = %q, want %q", offset, got, want)
+		}
+	}
+	if got := ago(time.Time{}, now); got != "never fetched" {
+		t.Errorf("zero time = %q", got)
+	}
+}
+
+func TestEntriesInUse(t *testing.T) {
+	used := entriesInUse(engine.Status{Slots: []engine.SlotStatus{
+		{Tier: 1, Main: "exit"},
+		{Tier: 2, Entry: "de", Main: "exit"},
+		{HopOnly: true, Main: "se"},
+		{Tier: 0, Err: "down"},
+	}})
+	if len(used) != 2 || !used["de"] || !used["se"] {
+		t.Fatalf("entriesInUse = %v", used)
+	}
+}
+
+func TestNodeFilterHidesRowsWithoutRebuild(t *testing.T) {
+	d := routeTestDashboard(t)
+	d.status.Country = []engine.Probe{
+		{Name: "Germany", Server: "de.example", OK: true},
+		{Name: "Sweden", Server: "se.example", OK: false},
+	}
+	d.navigate("subscriptions")
+	rendered := d.lastRender
+	visible := func() []string {
+		var names []string
+		findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+			if row, ok := obj.(*fyne.Container); ok && !row.Visible() {
+				return true // a hidden subtree
+			}
+			if text, ok := obj.(*fitText); ok && (text.text == "Germany" || text.text == "Sweden") {
+				names = append(names, text.text)
+			}
+			return false
+		})
+		return names
+	}
+	if got := visible(); len(got) != 2 {
+		t.Fatalf("unfiltered rows = %v", got)
+	}
+	test.Type(d.inputs["nodes"], "se.ex")
+	if got := visible(); len(got) != 1 || got[0] != "Sweden" {
+		t.Fatalf("search by server = %v", got)
+	}
+	if d.lastRender != rendered {
+		t.Fatal("typing a search rebuilt the page")
+	}
+	d.nodeQuery = ""
+	d.inputs["nodes"].SetText("")
+	d.nodesOnline = true
+	d.render()
+	if got := visible(); len(got) != 1 || got[0] != "Germany" {
+		t.Fatalf("online only = %v", got)
+	}
+	if d.lastRender == rendered {
+		t.Fatal("expected the explicit render above")
+	}
+}
+
+func TestOverviewAndSubscriptionsStayNarrow(t *testing.T) {
+	long := strings.Repeat("Очень длинное имя узла ", 8)
+	d := routeTestDashboard(t)
+	d.state.Slots[0].Name = long
+	d.state.TunSlot = long
+	d.state.PinEntry = long
+	d.state.Subs = []store.Subscription{{Name: long, URL: "https://x", FetchErr: long}}
+	probe := engine.Probe{Name: long, Server: strings.Repeat("sub.", 30) + "example", OK: true, Latency: time.Second, SpeedN: 2, Speed: 0.4, Samples: 9, Flakiness: 50}
+	d.status = engine.Status{Tier: 2, Entry: long, Main: long, Note: long, TunErr: long, Country: []engine.Probe{probe}, Bypass: []engine.Probe{probe},
+		Sweep: engine.Sweep{Node: long, Total: 3}, Slots: []engine.SlotStatus{{Name: long, Tier: 2, Entry: long, Main: long}}}
+	for _, page := range []string{"overview", "subscriptions"} {
+		d.navigate(page)
+		if width := d.window.Content().MinSize().Width; width > 760 {
+			t.Fatalf("%s: long names force window width %.0f", page, width)
+		}
+	}
+}

@@ -310,12 +310,19 @@ func TestSlotDisplaysSelectedForVPN(t *testing.T) {
 	}
 
 	d.navigate("overview")
-	overviewLabels := findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
-		l, ok := obj.(*widget.Label)
-		return ok && strings.Contains(l.Text, "VPN slot")
+	var vpnRows []string
+	findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		row, ok := obj.(*fyne.Container)
+		if !ok {
+			return false
+		}
+		if _, ok := row.Layout.(*titleTagsLayout); ok && routeHasText(row, "VPN") {
+			vpnRows = append(vpnRows, row.Objects[0].(*fitText).text)
+		}
+		return false
 	})
-	if len(overviewLabels) != 1 || !strings.Contains(overviewLabels[0].(*widget.Label).Text, ":2086") {
-		t.Fatalf("expected overview to show ':2086 · VPN slot', got %+v", overviewLabels)
+	if len(vpnRows) != 1 || vpnRows[0] != "second" {
+		t.Fatalf("expected overview to mark only 'second' as the VPN endpoint, got %v", vpnRows)
 	}
 
 	d.settingsSection = "VPN"
