@@ -68,7 +68,7 @@ or a **system-wide TUN** — with automatic tiered failover.
     exported link carries the shown name, so re-importing a renamed exit used to duplicate it). **Export** (`share.go`)
     is Marzban-style: a QR per link (`rsc.io/qr`, drawn black-on-white with a
     quiet zone), Copy link, and for lists Copy all links / Copy as subscription (base64). It exists per exit, per slot,
-    per entry node, and per provider. Nodes without a `raw` link go through `xray.OutboundToVLESS`, and any setting a
+    per entry node, per provider, and for Hardware ID (in Settings -> Device). Nodes without a `raw` link go through `xray.OutboundToVLESS`, and any setting a
     link can't carry (e.g. `finalmask`) is named in the dialog. Links, QR encoding, and pasted-link parsing live in
     `internal/share`, shared with Android. Status events rebuild the page at most every
     `statusRenderGap`, and only when the part the page shows changed (`statusKey`). A rebuild between press and
@@ -91,7 +91,7 @@ or a **system-wide TUN** — with automatic tiered failover.
     In use / Pinned / Testing speed beside the name, then latency / Mbps / failure-rate tags, and a pinned node gets an Unpin banner.
     Names next to tags use `titleWithTags`, which shrinks only the name.
   - `internal/share` — exits and entry nodes as VLESS links (`MainLink` puts the shown name in the fragment,
-    `NodeLink`), QR codes, base64 subscriptions, and pasted-exit parsing (`ParseExits`). The hidden `share` command
+    `NodeLink`), HWID export, QR codes, base64 subscriptions, and pasted-exit parsing (`ParseExits`). The hidden `share` command
     (handled in `main.go` before `store.Load`, so it never touches state) reads a JSON `Request` on stdin and writes
     links with QR module strings, or parsed exits; the Android app runs it as a child process (`Exports.java`).
   - `internal/loghub` — structured records (timestamp, severity, module, element, message) shared by CLI, TUI,
@@ -242,11 +242,12 @@ or a **system-wide TUN** — with automatic tiered failover.
   "Down", the route, Port/Hop chips) and 'Selected for VPN'/'Use for VPN' with 'Edit port'; a "Final exits" card
   has Export and one card per exit (priority badge, share/rename/delete icons, chips for "In use", protocol and
   `mainUsage`, the host, Enabled / Allow direct (T1) checkboxes, raise/lower arrows). Exit edits go through
-  `editExit` (slot name + URL against the latest state). "Add final exits" takes several links or a base64
-  subscription. **Providers & nodes** mirrors desktop Subscriptions: provider rows with Active/Not used/Fetch failed
-  tags, counts, `ago`, Use this, export and remove (by URL); entry nodes grouped per provider (`nodeGroups`), folding
+  `editExit` (slot name + URL against the latest state). "Add final exits" takes several links, a base64
+  subscription, or a live QR scan (via "Scan QR" button or inside the add dialog). **Providers & nodes** mirrors desktop Subscriptions: provider rows with Active/Not used/Fetch failed
+  tags, counts, `ago`, Use this, export and remove (by URL), plus "Scan QR" to import subscriptions directly from QR codes; entry nodes grouped per provider (`nodeGroups`), folding
   per URL (`collapsedSubs`, unused providers start folded), live search and Online only that hide rows in place,
-  `sortProbes` (same order as desktop), a pin banner, and node rows with tags, share and Pin. Export dialogs
+  `sortProbes` (same order as desktop), a pin banner, and node rows with tags, share and Pin. Hardware ID supports QR code export and QR scanning in Device identity settings.
+  **QR Scanning** (`QrScanner.java`, backed by embedded ZXing QR reader): in-app camera viewfinder with autofocus, rotation-aware NV21/YUV frame decoding, reticle overlay, and storage image picker fallback. Export dialogs
   (`showShare`) page through links with a QR code (`Exports.qr`, whole-pixel scaling), Copy link / Copy all links /
   Copy as subscription. QR codes, exported links and parsed exits come from the Go binary's hidden `share` command,
   so Android exports the same text as desktop; a reply arriving after the activity finished is dropped. Status

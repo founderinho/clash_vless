@@ -40,7 +40,7 @@ func routeTestDashboard(t *testing.T) *dashboard {
 func routesDashboard(t *testing.T) (*dashboard, <-chan control.Command) {
 	t.Helper()
 	d := routeTestDashboard(t)
-	sock := filepath.Join(t.TempDir(), "control.sock")
+	sock := filepath.Join(t.TempDir(), "c.sock")
 	ln, err := control.Listen(sock)
 	if err != nil {
 		t.Fatal(err)

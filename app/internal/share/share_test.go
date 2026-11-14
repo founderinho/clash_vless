@@ -100,3 +100,14 @@ func TestServeSub(t *testing.T) {
 		t.Fatalf("links = %+v", response.Links)
 	}
 }
+
+func TestServeHWID(t *testing.T) {
+	hwid := "abcdef12-3456-7890-abcd-ef1234567890"
+	response := Handle(Request{HWID: hwid})
+	if len(response.Links) != 1 || response.Links[0].URL != hwid || response.Links[0].Name != "Hardware ID" {
+		t.Fatalf("hwid response = %+v", response.Links)
+	}
+	if response.Links[0].QR == nil {
+		t.Fatal("expected QR for HWID")
+	}
+}

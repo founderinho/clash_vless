@@ -118,6 +118,7 @@ type Request struct {
 	Nodes []store.Node `json:"nodes,omitempty"`
 	Sub   *Link        `json:"sub,omitempty"`
 	Links []Link       `json:"links,omitempty"`
+	HWID  string       `json:"hwid,omitempty"`
 	Parse string       `json:"parse,omitempty"`
 }
 
@@ -159,8 +160,11 @@ func qrItem(link Link) Item {
 }
 
 func Handle(request Request) Response {
-	links := make([]Link, 0, len(request.Mains)+len(request.Nodes)+len(request.Links))
+	links := make([]Link, 0, len(request.Mains)+len(request.Nodes)+len(request.Links)+1)
 	links = append(links, request.Links...)
+	if request.HWID != "" {
+		links = append(links, Link{Name: "Hardware ID", URL: request.HWID})
+	}
 	for _, main := range request.Mains {
 		links = append(links, MainLink(main))
 	}

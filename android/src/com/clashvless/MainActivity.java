@@ -1,11 +1,13 @@
 package com.clashvless;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -15,6 +17,7 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
+import android.net.Uri;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.Bundle;
@@ -42,6 +45,7 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -52,6 +56,10 @@ import java.util.function.IntConsumer;
 
 /** Native Android dashboard over the same daemon protocol as desktop. */
 public class MainActivity extends Activity {
+    private static final int REQ_CAMERA_PERMISSION = 3001;
+    private Consumer<String> pendingScanCallback;
+    private String pendingScanTitle;
+
     static final String ACTION_CONNECT = "com.clashvless.CONNECT";
     private static final String[] TABS = {"Settings", "Overview", "Log"};
     private static final String[] ICONS = {"settings", "overview", "activity"};
@@ -473,7 +481,7 @@ public class MainActivity extends Activity {
         refresh.setEnabled(count > 0);
         if (count == 0) refresh.setAlpha(0.4f);
         providers.addView(spacer(8));
-        providers.addView(equalRow(btn("Add subscription", true, this::addSub), refresh));
+        providers.addView(equalRow(btn("Add subscription", true, this::addSub), btn("Scan QR", false, this::scanSubQR), refresh));
         if (count > 1) providers.addView(toggle("Use nodes from all providers", combined, on -> Ctl.patch("auto_select", on)));
         if (count == 0) providers.addView(text("No subscriptions yet. Add a subscription URL to get entry nodes for hopped routes (T2/T3).", 12, MUTED, false));
         Set<String> online = new HashSet<>();
@@ -1194,7 +1202,7 @@ public class MainActivity extends Activity {
         card.addView(head);
         if (count == 0) card.addView(text("No final exits in this slot yet.", 12, MUTED, false), topMargin(8));
         for (int m = 0; m < count; m++) card.addView(exitCard(slotName, mains.optJSONObject(m), m, count, live), topMargin(8));
-        card.addView(btn("Add final exits", true, () -> addExits(slotName)), topMargin(10));
+        card.addView(equalRow(btn("Add final exits", true, () -> addExits(slotName)), btn("Scan QR", false, () -> scanExitsQR(slotName))), topMargin(10));
         return card;
     }
 
@@ -1303,40 +1311,57 @@ public class MainActivity extends Activity {
 
     /** Takes several links, one per line, or a base64 subscription; the Go side validates and names them. */
     private void addExits(String slotName) {
-        askLines("Add final exits", "vless://... one per line, or a base64 subscription", value -> {
-            try {
-                Exports.call(this, new JSONObject().put("parse", value), response -> {
-                    JSONArray exits = response.optJSONArray("exits");
-                    int invalid = response.optInt("invalid");
-                    if (exits == null || exits.length() == 0) { toast("Enter at least one valid vless:// link"); return; }
-                    JSONObject st = Ctl.state;
-                    JSONArray slots = copy(st == null ? null : st.optJSONArray("slots"));
-                    for (int s = 0; s < slots.length(); s++) {
-                        JSONObject slot = slots.optJSONObject(s);
-                        if (!slotName.equals(slot.optString("name"))) continue;
-                        try {
-                            JSONArray mains = slot.optJSONArray("mains");
-                            if (mains == null) slot.put("mains", mains = new JSONArray());
-                            Set<String> present = new HashSet<>();
-                            for (int m = 0; m < mains.length(); m++) present.add(withoutName(mains.optJSONObject(m).optString("url")));
-                            int added = 0, duplicate = 0;
-                            for (int e = 0; e < exits.length(); e++) {
-                                if (!present.add(withoutName(exits.optJSONObject(e).optString("url")))) { duplicate++; continue; }
-                                mains.put(exits.optJSONObject(e));
-                                added++;
-                            }
-                            if (added > 0) Ctl.patch("slots", slots);
-                            String message = "Added " + added + " exit(s) to " + slotName;
-                            if (duplicate > 0) message += " | " + duplicate + " already present";
-                            if (invalid > 0) message += " | " + invalid + " invalid line(s) skipped";
-                            toast(message);
-                        } catch (Exception e) { failed(e); }
-                        return;
-                    }
-                    toast("This slot was removed while editing");
-                });
-            } catch (Exception e) { failed(e); }
+        askLines("Add final exits", "vless://... one per line, or a base64 subscription", () -> scanExitsQR(slotName), value -> {
+            importExitsToSlot(slotName, value);
         });
+    }
+
+    private void scanExitsQR(String slotName) {
+        scanQR("Scan exit route QR (" + slotName + ")", text -> importExitsToSlot(slotName, text));
+    }
+
+    private void importExitsToSlot(String slotName, String value) {
+        value = value.trim();
+        if (value.startsWith("http://") || value.startsWith("https://")) {
+            String subUrl = value;
+            confirm("Scanned a subscription URL. Add it to subscriptions instead?", () -> {
+                if (Ctl.cmd("addsub", "url", subUrl)) fetching("adding subscription");
+                toast("Subscription added");
+            });
+            return;
+        }
+        try {
+            Exports.call(this, new JSONObject().put("parse", value), response -> {
+                JSONArray exits = response.optJSONArray("exits");
+                int invalid = response.optInt("invalid");
+                if (exits == null || exits.length() == 0) { toast("No valid vless:// links found"); return; }
+                JSONObject st = Ctl.state;
+                JSONArray slots = copy(st == null ? null : st.optJSONArray("slots"));
+                for (int s = 0; s < slots.length(); s++) {
+                    JSONObject slot = slots.optJSONObject(s);
+                    if (!slotName.equals(slot.optString("name"))) continue;
+                    try {
+                        JSONArray mains = slot.optJSONArray("mains");
+                        if (mains == null) slot.put("mains", mains = new JSONArray());
+                        Set<String> present = new HashSet<>();
+                        for (int m = 0; m < mains.length(); m++) present.add(withoutName(mains.optJSONObject(m).optString("url")));
+                        int added = 0, duplicate = 0;
+                        for (int e = 0; e < exits.length(); e++) {
+                            if (!present.add(withoutName(exits.optJSONObject(e).optString("url")))) { duplicate++; continue; }
+                            mains.put(exits.optJSONObject(e));
+                            added++;
+                        }
+                        if (added > 0) Ctl.patch("slots", slots);
+                        String message = "Added " + added + " exit(s) to " + slotName;
+                        if (duplicate > 0) message += " | " + duplicate + " already present";
+                        if (invalid > 0) message += " | " + invalid + " invalid line(s) skipped";
+                        toast(message);
+                    } catch (Exception e) { failed(e); }
+                    return;
+                }
+                toast("This slot was removed while editing");
+            });
+        } catch (Exception e) { failed(e); }
     }
 
     /** Marzban-style export: a QR code per link with copy actions, and whole-list copies when there are several. */
@@ -1495,6 +1520,10 @@ public class MainActivity extends Activity {
     }
 
     private void askLines(String title, String hint, Consumer<String> ok) {
+        askLines(title, hint, null, ok);
+    }
+
+    private void askLines(String title, String hint, Runnable onScan, Consumer<String> ok) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setOnKeyListener((d, keyCode, event) -> {
@@ -1531,6 +1560,13 @@ public class MainActivity extends Activity {
         LinearLayout buttons = new LinearLayout(this);
         buttons.setGravity(Gravity.END);
         buttons.addView(btn("Cancel", false, dialog::dismiss));
+        if (onScan != null) {
+            buttons.addView(new View(this), new LinearLayout.LayoutParams(dp(8), 1));
+            buttons.addView(btn("Scan QR", false, () -> {
+                dialog.dismiss();
+                onScan.run();
+            }));
+        }
         buttons.addView(new View(this), new LinearLayout.LayoutParams(dp(8), 1));
         buttons.addView(btn("Add", true, () -> {
             String value = input.getText().toString().trim();
@@ -1865,9 +1901,11 @@ public class MainActivity extends Activity {
             LinearLayout identity = card("Device identity", "Stable Happ-compatible identity for every panel");
             JSONObject device = st.optJSONObject("device");
             String hwid = device == null ? "" : device.optString("hwid");
-            actionRow(identity, "Hardware ID", hwid, () -> ask("Hardware ID", hwid, InputType.TYPE_CLASS_TEXT, value -> {
-                if (!value.matches("[a-zA-Z0-9=-]{10,64}")) { toast("HWID must be 10-64 letters, digits, = or -"); return; }
-                try { Ctl.patch("device", new JSONObject(device.toString()).put("hwid", value)); } catch (Exception e) { failed(e); }
+            actionRow(identity, "Hardware ID", hwid, () -> askHWID(hwid), icon(R.drawable.clashvless_qr, "Export HWID as QR code", !hwid.isEmpty(), () -> {
+                try {
+                    Exports.call(this, new JSONObject().put("links", new JSONArray().put(new JSONObject().put("name", "Hardware ID").put("url", hwid))),
+                            response -> showShare("Export | Hardware ID", response));
+                } catch (Exception e) { failed(e); }
             }));
             if (device != null) {
                 identity.addView(text("Panel OS: " + device.optString("os") + " " + device.optString("os_ver")
@@ -1937,8 +1975,60 @@ public class MainActivity extends Activity {
         else onActivityResult(1, RESULT_OK, null);
     }
 
+    private void scanQR(String title, Consumer<String> onResult) {
+        pendingScanTitle = title;
+        pendingScanCallback = onResult;
+        if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA_PERMISSION);
+            return;
+        }
+        QrScanner.showScanner(this, title, () -> QrScanner.pickImage(this), onResult);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (requestCode == REQ_CAMERA_PERMISSION) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                if (pendingScanCallback != null) {
+                    QrScanner.showScanner(this, pendingScanTitle, () -> QrScanner.pickImage(this), pendingScanCallback);
+                }
+            } else {
+                toast("Camera permission denied; pick an image instead");
+                if (pendingScanCallback != null) {
+                    QrScanner.pickImage(this);
+                }
+            }
+            return;
+        }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    }
+
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
+        if (request == QrScanner.REQ_PICK_IMAGE) {
+            if (result != RESULT_OK || data == null || data.getData() == null) return;
+            Uri uri = data.getData();
+            new Thread(() -> {
+                try (InputStream stream = getContentResolver().openInputStream(uri)) {
+                    Bitmap bmp = BitmapFactory.decodeStream(stream);
+                    String text = QrScanner.decodeBitmap(bmp);
+                    runOnUiThread(() -> {
+                        if (text != null && !text.isEmpty()) {
+                            if (pendingScanCallback != null) {
+                                Consumer<String> cb = pendingScanCallback;
+                                pendingScanCallback = null;
+                                cb.accept(text.trim());
+                            }
+                        } else {
+                            toast("No QR code found in selected image");
+                        }
+                    });
+                } catch (Exception e) {
+                    runOnUiThread(() -> toast("Failed to read image: " + e.getMessage()));
+                }
+            }).start();
+            return;
+        }
         if (request != 1) return;
         if (result != RESULT_OK) { renderHead(); return; }
         Intent intent = new Intent(this, VpnSvc.class).setAction(VpnSvc.ACTION_START);
@@ -1947,9 +2037,56 @@ public class MainActivity extends Activity {
     }
 
     private void addSub() {
-        ask("Subscription URL", "", InputType.TYPE_TEXT_VARIATION_URI, value -> {
+        ask("Subscription URL", "", InputType.TYPE_TEXT_VARIATION_URI, this::scanSubQR, value -> {
             if (!value.startsWith("http://") && !value.startsWith("https://")) { toast("Enter a valid http(s) URL"); return; }
             if (Ctl.cmd("addsub", "url", value)) fetching("adding subscription");
+        });
+    }
+
+    private void scanSubQR() {
+        scanQR("Scan subscription QR", this::importSubScanned);
+    }
+
+    private void importSubScanned(String text) {
+        text = text.trim();
+        if (text.startsWith("http://") || text.startsWith("https://")) {
+            if (Ctl.cmd("addsub", "url", text)) fetching("adding subscription");
+            toast("Subscription added");
+        } else if (text.startsWith("vless://") || text.contains("vless://")) {
+            String vless = text;
+            confirm("Scanned a VLESS exit link. Add it to exit routes instead?", () -> {
+                JSONObject st = Ctl.state;
+                JSONArray slots = st == null ? null : st.optJSONArray("slots");
+                String slot = slots != null && slots.length() > 0 ? slots.optJSONObject(0).optString("name") : "main";
+                importExitsToSlot(slot, vless);
+            });
+        } else {
+            toast("Scanned text is not a valid subscription URL: " + text);
+        }
+    }
+
+    private void askHWID(String hwid) {
+        ask("Hardware ID", hwid, InputType.TYPE_CLASS_TEXT, this::scanHWID, value -> {
+            if (!value.matches("[a-zA-Z0-9=-]{10,64}")) { toast("HWID must be 10-64 letters, digits, = or -"); return; }
+            try {
+                JSONObject device = Ctl.state == null ? new JSONObject() : Ctl.state.optJSONObject("device");
+                Ctl.patch("device", new JSONObject(device != null ? device.toString() : "{}").put("hwid", value));
+            } catch (Exception e) { failed(e); }
+        });
+    }
+
+    private void scanHWID() {
+        scanQR("Scan Hardware ID QR", text -> {
+            text = text.trim();
+            if (!text.matches("[a-zA-Z0-9=-]{10,64}")) {
+                toast("Scanned text is not a valid HWID: " + text);
+                return;
+            }
+            try {
+                JSONObject device = Ctl.state == null ? new JSONObject() : Ctl.state.optJSONObject("device");
+                Ctl.patch("device", new JSONObject(device != null ? device.toString() : "{}").put("hwid", text));
+                toast("Hardware ID updated");
+            } catch (Exception e) { failed(e); }
         });
     }
 
@@ -2106,6 +2243,10 @@ public class MainActivity extends Activity {
     }
 
     private void actionRow(LinearLayout parent, String label, String value, Runnable action) {
+        actionRow(parent, label, value, action, null);
+    }
+
+    private void actionRow(LinearLayout parent, String label, String value, Runnable action, View extra) {
         LinearLayout texts = new LinearLayout(this);
         texts.setOrientation(LinearLayout.VERTICAL);
         texts.addView(text(label, 13, TEXT, false));
@@ -2114,6 +2255,11 @@ public class MainActivity extends Activity {
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, dp(4), 0, dp(4));
         row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+        if (extra != null) {
+            LinearLayout.LayoutParams extraParams = new LinearLayout.LayoutParams(-2, -2);
+            extraParams.setMargins(dp(6), 0, 0, 0);
+            row.addView(extra, extraParams);
+        }
         LinearLayout.LayoutParams buttonParams = new LinearLayout.LayoutParams(-2, -2);
         buttonParams.setMargins(dp(8), 0, 0, 0);
         row.addView(btn("Edit", false, action), buttonParams);
@@ -2285,6 +2431,10 @@ public class MainActivity extends Activity {
     }
 
     private void ask(String title, String initial, int variation, Consumer<String> ok) {
+        ask(title, initial, variation, null, ok);
+    }
+
+    private void ask(String title, String initial, int variation, Runnable onScan, Consumer<String> ok) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setOnKeyListener((d, keyCode, event) -> {
@@ -2348,6 +2498,15 @@ public class MainActivity extends Activity {
         });
 
         buttons.addView(cancelBtn);
+        if (onScan != null) {
+            View scanSpacer = new View(this);
+            buttons.addView(scanSpacer, new LinearLayout.LayoutParams(dp(8), 1));
+            Button scanBtn = btn("Scan QR", false, () -> {
+                dialog.dismiss();
+                onScan.run();
+            });
+            buttons.addView(scanBtn);
+        }
         View btnSpacer = new View(this);
         buttons.addView(btnSpacer, new LinearLayout.LayoutParams(dp(8), 1));
         buttons.addView(saveBtn);

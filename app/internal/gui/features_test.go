@@ -666,3 +666,33 @@ func TestExportDialogClosesOnEscape(t *testing.T) {
 		t.Fatal("dialog should remain closed")
 	}
 }
+
+func TestHWIDQRExport(t *testing.T) {
+	d := routeTestDashboard(t)
+	d.settingsSection = "Device"
+	d.state.Device.HWID = "test-hwid-1234-5678"
+	d.navigate("settings")
+
+	var qrBtn *widget.Button
+	for _, obj := range findRouteObjects(d.content, func(obj fyne.CanvasObject) bool {
+		b, ok := obj.(*widget.Button)
+		return ok && b.Icon != nil && strings.Contains(b.Icon.Name(), "qr")
+	}) {
+		qrBtn = obj.(*widget.Button)
+		break
+	}
+	if qrBtn == nil {
+		t.Fatal("HWID QR export button not found in Device settings")
+	}
+
+	test.Tap(qrBtn)
+	if !d.dialogOpen || d.activeDialog == nil {
+		t.Fatal("HWID QR export dialog did not open")
+	}
+
+	handler := d.window.Canvas().OnTypedKey()
+	handler(&fyne.KeyEvent{Name: fyne.KeyEscape})
+	if d.dialogOpen || d.activeDialog != nil {
+		t.Fatal("HWID export dialog should close on Escape")
+	}
+}
