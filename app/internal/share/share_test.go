@@ -83,3 +83,20 @@ func TestTooLongForQR(t *testing.T) {
 		t.Fatalf("links %+v", response.Links)
 	}
 }
+
+func TestServeSub(t *testing.T) {
+	subURL := "https://example.com/sub/mytoken"
+	response := Handle(Request{
+		Sub:   &Link{Name: "My Sub", URL: subURL},
+		Nodes: []store.Node{{Name: "raw", Raw: linkB}},
+	})
+	if response.Sub == nil || response.Sub.URL != subURL || response.Sub.Name != "My Sub" {
+		t.Fatalf("sub = %+v", response.Sub)
+	}
+	if response.Sub.QR == nil {
+		t.Fatal("expected QR for sub")
+	}
+	if len(response.Links) != 1 || response.Links[0].URL != linkB {
+		t.Fatalf("links = %+v", response.Links)
+	}
+}

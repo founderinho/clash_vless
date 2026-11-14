@@ -23,6 +23,7 @@ import android.text.InputType;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -519,8 +520,17 @@ public class MainActivity extends Activity {
         }
         actions.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         String name = sub.optString("name"), url = sub.optString("url");
-        actions.addView(icon(R.drawable.clashvless_qr, "Export nodes as VLESS links", total > 0, () -> {
-            try { Exports.call(this, new JSONObject().put("nodes", nodes), response -> showShare("Export | " + name, response)); } catch (Exception e) { failed(e); }
+        actions.addView(icon(R.drawable.clashvless_link, "Copy subscription link", !url.isEmpty(), () -> {
+            copy("Subscription link", url, "Subscription link copied");
+        }));
+        boolean canExport = !url.isEmpty() || total > 0;
+        actions.addView(icon(R.drawable.clashvless_qr, "Export subscription QR code", canExport, () -> {
+            try {
+                JSONObject req = new JSONObject();
+                if (!url.isEmpty()) req.put("sub", new JSONObject().put("name", name).put("url", url));
+                if (nodes != null && nodes.length() > 0) req.put("nodes", nodes);
+                Exports.call(this, req, response -> showShare("Export | " + name, response));
+            } catch (Exception e) { failed(e); }
         }));
         actions.addView(icon(R.drawable.clashvless_delete, "Remove subscription", true, () -> confirm("Remove " + name + " and its cached nodes?", () -> {
             // By URL: another client may have removed an earlier subscription meanwhile.
@@ -1331,14 +1341,27 @@ public class MainActivity extends Activity {
 
     /** Marzban-style export: a QR code per link with copy actions, and whole-list copies when there are several. */
     private void showShare(String title, JSONObject response) {
-        JSONArray links = response.optJSONArray("links");
+        JSONObject subItem = response.optJSONObject("sub");
+        JSONArray nodeLinks = response.optJSONArray("links");
         int skipped = response.optInt("skipped");
-        if (links == null || links.length() == 0) {
+        if (subItem == null && (nodeLinks == null || nodeLinks.length() == 0)) {
             toast(skipped > 0 ? "Only VLESS nodes can be exported" : "Nothing to export");
             return;
         }
+        JSONArray subLinks = subItem != null ? new JSONArray().put(subItem) : null;
+        boolean hasBoth = subLinks != null && nodeLinks != null && nodeLinks.length() > 0;
+        final JSONArray[] currentLinks = {subLinks != null ? subLinks : nodeLinks};
+        final boolean[] inNodesMode = {subLinks == null};
+
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setOnKeyListener((d, keyCode, event) -> {
+            if (keyCode == KeyEvent.KEYCODE_ESCAPE && event.getAction() == KeyEvent.ACTION_UP) {
+                dialog.dismiss();
+                return true;
+            }
+            return false;
+        });
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(18), dp(16), dp(18), dp(14));
@@ -1346,6 +1369,15 @@ public class MainActivity extends Activity {
         bg.setStroke(dp(1), BORDER);
         root.setBackground(bg);
         root.addView(oneLine(title, 16, TEXT, true));
+
+        int dialogWidth = Math.min((int) (getResources().getDisplayMetrics().widthPixels * 0.92f), dp(400));
+        int qrSide = Math.min(dialogWidth - dp(36), dp(280));
+
+        int[] index = {0};
+        Button prev = btn("<", false, () -> { });
+        Button next = btn(">", false, () -> { });
+        LinearLayout nodesFooter = new LinearLayout(this);
+        nodesFooter.setOrientation(LinearLayout.VERTICAL);
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -1356,8 +1388,6 @@ public class MainActivity extends Activity {
         nameRow.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
         nameRow.addView(counter);
         content.addView(nameRow, topMargin(8));
-        int dialogWidth = Math.min((int) (getResources().getDisplayMetrics().widthPixels * 0.92f), dp(400));
-        int qrSide = Math.min(dialogWidth - dp(36), dp(280));
         ImageView qr = new ImageView(this);
         LinearLayout.LayoutParams qrParams = new LinearLayout.LayoutParams(qrSide, qrSide);
         qrParams.gravity = Gravity.CENTER_HORIZONTAL;
@@ -1376,39 +1406,79 @@ public class MainActivity extends Activity {
         scroller.addView(content);
         root.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        int[] index = {0};
-        Button prev = btn("<", false, () -> { });
-        Button next = btn(">", false, () -> { });
         Runnable show = () -> {
+            JSONArray links = currentLinks[0];
             JSONObject item = links.optJSONObject(index[0]);
             name.setText(item.optString("name"));
-            counter.setText((index[0] + 1) + " of " + links.length());
-            android.graphics.Bitmap bitmap = Exports.qr(item.optJSONObject("qr"), qrSide);
+            counter.setText(links.length() > 1 ? (index[0] + 1) + " of " + links.length() : "");
+            Bitmap bitmap = Exports.qr(item.optJSONObject("qr"), qrSide);
             qr.setImageBitmap(bitmap);
             qr.setVisibility(bitmap == null ? View.GONE : View.VISIBLE);
             tooLong.setVisibility(bitmap == null ? View.VISIBLE : View.GONE);
             link.setText(item.optString("url"));
             note.setText(item.optString("note"));
             note.setVisibility(item.optString("note").isEmpty() ? View.GONE : View.VISIBLE);
+            prev.setVisibility(links.length() > 1 ? View.VISIBLE : View.GONE);
+            next.setVisibility(links.length() > 1 ? View.VISIBLE : View.GONE);
             prev.setEnabled(index[0] > 0);
             next.setEnabled(index[0] < links.length() - 1);
             prev.setAlpha(prev.isEnabled() ? 1 : 0.4f);
             next.setAlpha(next.isEnabled() ? 1 : 0.4f);
+            nodesFooter.setVisibility(inNodesMode[0] && links.length() > 1 ? View.VISIBLE : View.GONE);
         };
+
+        if (hasBoth) {
+            LinearLayout modeRow = new LinearLayout(this);
+            modeRow.setOrientation(LinearLayout.HORIZONTAL);
+            Button subBtn = btn("Subscription link", true, () -> {});
+            Button nodesBtn = btn("Nodes as VLESS (" + nodeLinks.length() + ")", false, () -> {});
+            Runnable updateTabs = () -> {
+                subBtn.setBackground(round(inNodesMode[0] ? CONTROL : ACCENT, 8));
+                subBtn.setTextColor(inNodesMode[0] ? MUTED : 0xFF0F1319);
+                nodesBtn.setBackground(round(inNodesMode[0] ? ACCENT : CONTROL, 8));
+                nodesBtn.setTextColor(inNodesMode[0] ? 0xFF0F1319 : MUTED);
+            };
+            subBtn.setOnClickListener(v -> {
+                if (inNodesMode[0]) {
+                    inNodesMode[0] = false;
+                    currentLinks[0] = subLinks;
+                    index[0] = 0;
+                    updateTabs.run();
+                    show.run();
+                }
+            });
+            nodesBtn.setOnClickListener(v -> {
+                if (!inNodesMode[0]) {
+                    inNodesMode[0] = true;
+                    currentLinks[0] = nodeLinks;
+                    index[0] = 0;
+                    updateTabs.run();
+                    show.run();
+                }
+            });
+            updateTabs.run();
+            modeRow.addView(subBtn, new LinearLayout.LayoutParams(0, -2, 1));
+            View spacer = new View(this);
+            modeRow.addView(spacer, new LinearLayout.LayoutParams(dp(8), 1));
+            modeRow.addView(nodesBtn, new LinearLayout.LayoutParams(0, -2, 1));
+            root.addView(modeRow, 1);
+        }
+
         prev.setOnClickListener(v -> { index[0]--; show.run(); });
         next.setOnClickListener(v -> { index[0]++; show.run(); });
-        Button copyLink = btn("Copy link", true, () -> copy("VLESS link", links.optJSONObject(index[0]).optString("url"), "Link copied"));
-        LinearLayout actions = links.length() > 1 ? row(copyLink, prev, next) : row(copyLink);
+        Button copyLink = btn("Copy link", true, () -> copy("Link", currentLinks[0].optJSONObject(index[0]).optString("url"), "Link copied"));
+        LinearLayout actions = row(copyLink, prev, next);
         root.addView(actions, topMargin(10));
-        if (links.length() > 1) {
+        if (nodeLinks != null && nodeLinks.length() > 1) {
             StringBuilder joined = new StringBuilder();
-            for (int i = 0; i < links.length(); i++) joined.append(i > 0 ? "\n" : "").append(links.optJSONObject(i).optString("url"));
+            for (int i = 0; i < nodeLinks.length(); i++) joined.append(i > 0 ? "\n" : "").append(nodeLinks.optJSONObject(i).optString("url"));
             String all = joined.toString();
-            root.addView(text(links.length() + " links" + (skipped > 0 ? " | " + skipped + " non-VLESS nodes skipped" : ""), 11, MUTED, false), topMargin(6));
-            root.addView(equalRow(
-                    btn("Copy all links", false, () -> copy("VLESS links", all, links.length() + " links copied")),
+            nodesFooter.addView(text(nodeLinks.length() + " links" + (skipped > 0 ? " | " + skipped + " non-VLESS nodes skipped" : ""), 11, MUTED, false), topMargin(6));
+            nodesFooter.addView(equalRow(
+                    btn("Copy all links", false, () -> copy("VLESS links", all, nodeLinks.length() + " links copied")),
                     btn("Copy as subscription", false, () -> copy("Subscription", android.util.Base64.encodeToString(
                             all.getBytes(java.nio.charset.StandardCharsets.UTF_8), android.util.Base64.NO_WRAP), "Base64 subscription copied"))));
+            root.addView(nodesFooter);
         }
         LinearLayout close = new LinearLayout(this);
         close.setGravity(Gravity.END);
@@ -1427,6 +1497,13 @@ public class MainActivity extends Activity {
     private void askLines(String title, String hint, Consumer<String> ok) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setOnKeyListener((d, keyCode, event) -> {
+            if (keyCode == KeyEvent.KEYCODE_ESCAPE && event.getAction() == KeyEvent.ACTION_UP) {
+                dialog.dismiss();
+                return true;
+            }
+            return false;
+        });
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(20), dp(18), dp(20), dp(18));
@@ -2210,6 +2287,13 @@ public class MainActivity extends Activity {
     private void ask(String title, String initial, int variation, Consumer<String> ok) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setOnKeyListener((d, keyCode, event) -> {
+            if (keyCode == KeyEvent.KEYCODE_ESCAPE && event.getAction() == KeyEvent.ACTION_UP) {
+                dialog.dismiss();
+                return true;
+            }
+            return false;
+        });
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -2290,6 +2374,13 @@ public class MainActivity extends Activity {
     private void choose(String title, String[] items, IntConsumer pick) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setOnKeyListener((d, keyCode, event) -> {
+            if (keyCode == KeyEvent.KEYCODE_ESCAPE && event.getAction() == KeyEvent.ACTION_UP) {
+                dialog.dismiss();
+                return true;
+            }
+            return false;
+        });
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -2348,6 +2439,13 @@ public class MainActivity extends Activity {
     private void confirm(String question, Runnable yes) {
         Dialog dialog = new Dialog(this);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        dialog.setOnKeyListener((d, keyCode, event) -> {
+            if (keyCode == KeyEvent.KEYCODE_ESCAPE && event.getAction() == KeyEvent.ACTION_UP) {
+                dialog.dismiss();
+                return true;
+            }
+            return false;
+        });
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);

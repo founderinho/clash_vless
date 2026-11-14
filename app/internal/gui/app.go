@@ -15,6 +15,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -29,6 +30,7 @@ import (
 
 type dashboard struct {
 	dialogOpen      bool
+	activeDialog    dialog.Dialog
 	logRefresh      func() // re-filters the Activity list; only valid while that page is shown
 	pauseLog        bool
 	scroll          *container.Scroll
@@ -158,6 +160,18 @@ func (d *dashboard) buildShell() {
 	main := container.NewBorder(nil, statusBar, nil, nil, d.content)
 	d.tips = newTooltipLayer()
 	d.window.SetContent(container.NewStack(container.NewBorder(nil, nil, sidebar, nil, main), d.tips.layer))
+
+	onKey := func(ev *fyne.KeyEvent) {
+		if ev != nil && ev.Name == fyne.KeyEscape {
+			d.closeDialog()
+		}
+	}
+	if d.window != nil && d.window.Canvas() != nil {
+		d.window.Canvas().SetOnTypedKey(onKey)
+		if dc, ok := d.window.Canvas().(desktop.Canvas); ok {
+			dc.SetOnKeyDown(onKey)
+		}
+	}
 }
 
 func (d *dashboard) addLog(record loghub.Record) {
@@ -418,12 +432,27 @@ func (d *dashboard) confirm(title, message string, apply func()) {
 func (d *dashboard) showDialog(form dialog.Dialog) {
 	// Keep the underlying widget tree stable until the modal releases focus.
 	d.dialogOpen = true
+	d.activeDialog = form
 	d.tips.hide(nil) // the modal covers its button, so MouseOut never comes
+	if d.window != nil && d.window.Canvas() != nil {
+		d.window.Canvas().Unfocus()
+	}
 	form.SetOnClosed(func() {
+		if d.activeDialog == form {
+			d.activeDialog = nil
+		}
 		d.dialogOpen = false
 		d.render()
 	})
 	form.Show()
+}
+
+func (d *dashboard) closeDialog() {
+	if d.activeDialog != nil {
+		dlg := d.activeDialog
+		d.activeDialog = nil
+		dlg.Hide()
+	}
 }
 
 func (d *dashboard) addSubscription() {
