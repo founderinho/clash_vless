@@ -8,8 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 
 /**
- * End-to-end tests for QR generation, camera preview/image scanning,
- * and import parsing for subscriptions, exit routes, and HWID.
+ * Host-side tests for QR decoding, scan cancellation and image sampling.
  */
 public final class ScanImportTest {
 
@@ -28,6 +27,8 @@ public final class ScanImportTest {
         testHWIDQRExportAndScan();
         testCameraPreviewYUVAllOrientations();
         testCorruptedDataGracefulNull();
+        testCancelledScanDropsQueuedResult();
+        testImageSamplingBounds();
 
         System.out.println("ALL SCAN & IMPORT TESTS PASSED!");
     }
@@ -181,6 +182,41 @@ public final class ScanImportTest {
         assertTrue(QrScanner.decodePixels(new int[100], 10, 10) == null, "Blank pixels should return null");
         assertTrue(QrScanner.decodeYUV(null, 10, 10, 0) == null, "Null YUV should return null");
         assertTrue(QrScanner.decodeYUV(new byte[100], 10, 10, 0) == null, "Blank YUV should return null");
+        assertTrue(QrScanner.decodePixels(new int[10], Integer.MAX_VALUE, Integer.MAX_VALUE) == null, "Overflowing dimensions must be rejected");
+        assertTrue(QrScanner.decodeYUV(new byte[10], 100, 100, 90) == null, "Truncated YUV must be rejected before rotation");
         System.out.println("  PASSED: Corrupted/empty data gracefully handled without exceptions");
+    }
+
+    private static void testCancelledScanDropsQueuedResult() {
+        QrScanner.ScanSession cancelled = new QrScanner.ScanSession();
+        assertTrue(cancelled.queueResult(), "A decoded result must be queued");
+        cancelled.cancel();
+        assertTrue(!cancelled.deliverResult(), "Cancel must discard a result already queued on the UI thread");
+        assertTrue(!cancelled.isActive() && !cancelled.queueResult(), "Cancelled scanners must reject later frames");
+
+        QrScanner.ScanSession closed = new QrScanner.ScanSession();
+        closed.cancel();
+        assertTrue(!closed.queueResult(), "Closing before decoding must discard the result");
+
+        QrScanner.ScanSession success = new QrScanner.ScanSession();
+        assertTrue(success.queueResult(), "A live scan must accept its first result");
+        assertTrue(!success.queueResult(), "A second frame must not enqueue another result");
+        assertTrue(success.deliverResult(), "A live queued result must be delivered");
+        assertTrue(!success.deliverResult(), "A result must be delivered only once");
+        success.cancel();
+        System.out.println("  PASSED: Scan cancellation drops queued results; successful scans deliver once");
+    }
+
+    private static void testImageSamplingBounds() {
+        int[][] cases = {{240, 240, 1}, {2048, 2048, 1}, {2049, 2048, 2},
+                {8000, 6000, 4}, {6000, 8000, 4}, {12000, 9000, 8}, {1, Integer.MAX_VALUE, 1048576}};
+        for (int[] dims : cases) {
+            int sample = QrScanner.imageSampleSize(dims[0], dims[1]);
+            assertTrue(sample == dims[2], "Unexpected image downsampling factor");
+            long width = ((long) dims[0] + sample - 1) / sample;
+            long height = ((long) dims[1] + sample - 1) / sample;
+            assertTrue(width <= 2048 && height <= 2048, "A decoded image must fit the memory bound");
+        }
+        System.out.println("  PASSED: Large images are sampled before allocation, including 48 MP and portrait photos");
     }
 }

@@ -45,7 +45,6 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -2006,25 +2005,25 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         if (request == QrScanner.REQ_PICK_IMAGE) {
-            if (result != RESULT_OK || data == null || data.getData() == null) return;
+            Consumer<String> callback = pendingScanCallback;
+            pendingScanCallback = null;
+            if (result != RESULT_OK || data == null || data.getData() == null || callback == null) return;
             Uri uri = data.getData();
             new Thread(() -> {
-                try (InputStream stream = getContentResolver().openInputStream(uri)) {
-                    Bitmap bmp = BitmapFactory.decodeStream(stream);
-                    String text = QrScanner.decodeBitmap(bmp);
+                try {
+                    String text = QrScanner.decodeImage(getContentResolver(), uri);
                     runOnUiThread(() -> {
+                        if (isFinishing() || isDestroyed()) return;
                         if (text != null && !text.isEmpty()) {
-                            if (pendingScanCallback != null) {
-                                Consumer<String> cb = pendingScanCallback;
-                                pendingScanCallback = null;
-                                cb.accept(text.trim());
-                            }
+                            callback.accept(text.trim());
                         } else {
                             toast("No QR code found in selected image");
                         }
                     });
                 } catch (Exception e) {
                     runOnUiThread(() -> toast("Failed to read image: " + e.getMessage()));
+                } catch (OutOfMemoryError e) {
+                    runOnUiThread(() -> toast("Not enough memory to scan this image"));
                 }
             }).start();
             return;

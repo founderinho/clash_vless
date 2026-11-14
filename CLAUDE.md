@@ -50,19 +50,23 @@ or a **system-wide TUN** — with automatic tiered failover.
     `tooltipLayer` stacked over the window. It holds only canvas objects, which are never hit targets, so it
     can't steal clicks or hover, and showing a hint doesn't shift the row. A slot is two cards spaced apart, with no
     separator lines: the slot card (title row, a status strip, actions) and a "Final exits" card where each exit is
-    its own bordered card (accent border when in use). Desktop `groupMains` groups VLESS links differing only in
+    its own bordered card (accent border when in use). Shared `store.MainGroups` groups VLESS links differing only in
     server hostname/IP and fragment into one final-exit card; UUID, port and all query parameters must match.
     Query order/escaping is normalized without resolving DNS. Both addresses remain separate `Slot.Mains`
     candidates for the engine's direct/hopped failover and TUN bypass; existing state needs no migration.
+    GUI cards and engine candidates use the same group priority: all eligible addresses of the first group
+    are tried before the next group within each tier, even if stored addresses are interleaved. Grouping
+    precedes eligibility filtering, so disabling the leading address does not lower its fallback's priority.
     The card lists all addresses, exports every link and applies rename/delete/toggles/priority to the group;
-    mixed address flags appear indeterminate until changed. Group edits capture all URLs and reject a removed
-    member; reordering moves the group together, preserving its address order. Text under names is kept to one line of short tags (`labels.go`):
+    mixed address flags appear indeterminate until changed. Group edits capture URL occurrence counts,
+    update every duplicate once, and reject a changed group membership (including duplicate counts);
+    reordering moves the group together, preserving its address order. Text under names is kept to one line of short tags (`labels.go`):
     a slot shows `slotLiveLine` (a colored state tag such as "T1 Direct · 87 ms", "First hop only", "Down", then the
     route or error) with Port/Hop chips on the right, inside a `tonedBox` tinted by the state; an exit shows its name, then chips for "In use", protocol and
     `mainUsage` ("Direct or hop", "Hop only", red "Unused: Vision needs direct"), then the host. Names and hosts
     use `fitText`, which ellipsizes to the available width. Each exit row shows its priority number,
     raise/lower arrows (reorder = priority), share (QR), rename, and delete.
-    Exit edits go through `mainRef` (slot name + URL), so a confirmation or rename finishing after another client
+    Exit edits go through `mainRef` (slot name + group URLs), so a confirmation or rename finishing after another client
     reordered the exits still hits the right one. "Add final exits" takes several links, one per line, or a base64
     subscription; `Slot.HasMain` skips exits already present, ignoring the `#fragment`, which is only a name (an
     exported link carries the shown name, so re-importing a renamed exit used to duplicate it). **Export** (`share.go`)
@@ -247,7 +251,14 @@ or a **system-wide TUN** — with automatic tiered failover.
   tags, counts, `ago`, Use this, export and remove (by URL), plus "Scan QR" to import subscriptions directly from QR codes; entry nodes grouped per provider (`nodeGroups`), folding
   per URL (`collapsedSubs`, unused providers start folded), live search and Online only that hide rows in place,
   `sortProbes` (same order as desktop), a pin banner, and node rows with tags, share and Pin. Hardware ID supports QR code export and QR scanning in Device identity settings.
-  **QR Scanning** (`QrScanner.java`, backed by embedded ZXing QR reader): in-app camera viewfinder with autofocus, rotation-aware NV21/YUV frame decoding, reticle overlay, and storage image picker fallback. Export dialogs
+  **QR Scanning** (`QrScanner.java`, backed by embedded ZXing QR reader): in-app camera viewfinder with autofocus, rotation-aware NV21/YUV frame decoding, reticle overlay, and storage image picker fallback.
+  A scan session invalidates queued UI results on dismissal and delivers a successful result once;
+  delivery also checks that the dialog and activity are still live. Camera startup and release are serialized.
+  Image import reads dimensions first, reopens the stream with power-of-two sampling to a maximum 2048-pixel
+  side, and recycles the decoded bitmap. `decodeBitmap` also bounds pixel-copy size for other callers;
+  memory exhaustion produces an error message. Image results retain their original import callback.
+  `ScanImportTest` runs host-side decoder, cancellation, and sampling checks; it does not exercise a physical camera.
+  Export dialogs
   (`showShare`) page through links with a QR code (`Exports.qr`, whole-pixel scaling), Copy link / Copy all links /
   Copy as subscription. QR codes, exported links and parsed exits come from the Go binary's hidden `share` command,
   so Android exports the same text as desktop; a reply arriving after the activity finished is dropped. Status

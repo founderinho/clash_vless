@@ -174,3 +174,83 @@ func TestGroupingPreservesMixedFlags(t *testing.T) {
 		t.Fatal("enabling a mixed group must enable both addresses")
 	}
 }
+
+func TestGroupedExitActionsIncludeDuplicateURLs(t *testing.T) {
+	for _, action := range []string{"disable", "hop only", "rename", "delete"} {
+		t.Run(action, func(t *testing.T) {
+			d, commands := routesDashboard(t)
+			for _, link := range []string{linkA, linkB, linkA, fallbackA} {
+				d.state.Slots[0].AddMain(link)
+			}
+			d.render()
+			switch action {
+			case "disable":
+				d.setMainFlag(0, 0, func(m *store.Main) { m.Enabled = false })
+			case "hop only":
+				d.setMainFlag(0, 0, func(m *store.Main) { m.AllowNoHop = false })
+			case "rename":
+				d.renameMain(0, 0)
+				d.state.Slots[0].MoveMain(3, 0)
+				routeDialogEntry(t, d).SetText("Unified exit")
+				tapRouteDialogButton(t, d, "Save")
+			case "delete":
+				d.removeMain(0, 0)
+				d.state.Slots[0].MoveMain(3, 0)
+				tapRouteDialogButton(t, d, "Yes")
+			}
+			applyRoutePatch(t, d, commands)
+			var members int
+			for _, m := range d.state.Slots[0].Mains {
+				if mainGroupKey(m.URL) != mainGroupKey(linkA) {
+					if m.URL != linkB || !m.Enabled || m.Name != "B" {
+						t.Fatal("editing the group changed another exit")
+					}
+					continue
+				}
+				members++
+				if action == "disable" && m.Enabled || action == "hop only" && m.AllowNoHop || action == "rename" && m.Name != "Unified exit" {
+					t.Fatalf("%s left a duplicate address unchanged", action)
+				}
+			}
+			want := 3
+			if action == "delete" {
+				want = 0
+			}
+			if members != want {
+				t.Fatalf("%s left %d group members, want %d", action, members, want)
+			}
+		})
+	}
+}
+
+func TestGroupedExitEditRejectsChangedDuplicateCount(t *testing.T) {
+	for _, add := range []bool{false, true} {
+		d, _ := groupedExitDashboard(t)
+		d.state.Slots[0].AddMain(linkA)
+		ref, _ := d.mainRef(0, 0)
+		if add {
+			d.state.Slots[0].AddMain(linkA)
+		} else {
+			d.state.Slots[0].RemoveMain(4)
+		}
+		called := false
+		if d.updateMain(ref, func(*store.Slot, []int) { called = true }) || called {
+			t.Fatal("a changed duplicate count must invalidate the pending group edit")
+		}
+	}
+}
+
+func TestDisplayedPriorityMatchesFailover(t *testing.T) {
+	d, _ := groupedExitDashboard(t)
+	slot := &d.state.Slots[0]
+	for i := range slot.Mains {
+		slot.Mains[i].AllowNoHop = true
+	}
+	var shown []store.Main
+	for _, group := range groupMains(slot.Mains) {
+		shown = append(shown, group.mains...)
+	}
+	if !reflect.DeepEqual(slot.DirectMains(), shown) || !reflect.DeepEqual(slot.HopMains(), shown) {
+		t.Fatal("the engine must try every address of a displayed group before the next group")
+	}
+}

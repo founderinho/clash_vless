@@ -3,8 +3,10 @@ package com.clashvless;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.Context;
+import android.content.ContentResolver;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -13,6 +15,7 @@ import android.graphics.SurfaceTexture;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.Camera;
+import android.net.Uri;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
@@ -32,9 +35,12 @@ import com.google.zxing.common.GlobalHistogramBinarizer;
 import com.google.zxing.common.HybridBinarizer;
 import com.google.zxing.qrcode.QRCodeReader;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
@@ -51,22 +57,61 @@ public final class QrScanner {
     private static final int BLACK = 0xFF000000;
 
     public static final int REQ_PICK_IMAGE = 2001;
+    private static final int MAX_IMAGE_SIDE = 2048;
 
     private QrScanner() { }
+
+    static int imageSampleSize(int width, int height) {
+        if (width <= 0 || height <= 0) throw new IllegalArgumentException("Invalid image dimensions");
+        int sample = 1;
+        while ((width - 1) / sample + 1 > MAX_IMAGE_SIDE || (height - 1) / sample + 1 > MAX_IMAGE_SIDE) {
+            sample *= 2;
+        }
+        return sample;
+    }
+
+    public static String decodeImage(ContentResolver resolver, Uri uri) throws IOException {
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        try (InputStream stream = resolver.openInputStream(uri)) {
+            BitmapFactory.decodeStream(stream, null, options);
+        }
+        if (options.outWidth <= 0 || options.outHeight <= 0) return null;
+        options.inSampleSize = imageSampleSize(options.outWidth, options.outHeight);
+        options.inJustDecodeBounds = false;
+        Bitmap bitmap = null;
+        try (InputStream stream = resolver.openInputStream(uri)) {
+            bitmap = BitmapFactory.decodeStream(stream, null, options);
+            return decodeBitmap(bitmap);
+        } finally {
+            if (bitmap != null) bitmap.recycle();
+        }
+    }
 
     /** Decodes a QR code from a standard RGB Bitmap. */
     public static String decodeBitmap(Bitmap bitmap) {
         if (bitmap == null) return null;
         int width = bitmap.getWidth();
         int height = bitmap.getHeight();
-        int[] pixels = new int[width * height];
-        bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
-        return decodePixels(pixels, width, height);
+        Bitmap scaled = bitmap;
+        try {
+            if (width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE) {
+                double ratio = (double) MAX_IMAGE_SIDE / Math.max(width, height);
+                width = Math.max(1, (int) (width * ratio));
+                height = Math.max(1, (int) (height * ratio));
+                scaled = Bitmap.createScaledBitmap(bitmap, width, height, true);
+            }
+            int[] pixels = new int[width * height];
+            scaled.getPixels(pixels, 0, width, 0, 0, width, height);
+            return decodePixels(pixels, width, height);
+        } finally {
+            if (scaled != bitmap) scaled.recycle();
+        }
     }
 
     /** Decodes a QR code from raw ARGB/RGB pixel array. */
     public static String decodePixels(int[] pixels, int width, int height) {
-        if (pixels == null || width <= 0 || height <= 0 || pixels.length < width * height) return null;
+        if (pixels == null || width <= 0 || height <= 0 || pixels.length < (long) width * height) return null;
         RGBLuminanceSource source = new RGBLuminanceSource(width, height, pixels);
         QRCodeReader reader = new QRCodeReader();
         try {
@@ -82,7 +127,7 @@ public final class QrScanner {
 
     /** Decodes a QR code from camera preview NV21 byte array with display orientation correction. */
     public static String decodeYUV(byte[] data, int width, int height, int orientation) {
-        if (data == null || width <= 0 || height <= 0) return null;
+        if (data == null || width <= 0 || height <= 0 || data.length < (long) width * height) return null;
         byte[] luminance;
         int lumWidth, lumHeight;
 
@@ -295,6 +340,26 @@ public final class QrScanner {
         }
     }
 
+    static final class ScanSession {
+        private int state;
+
+        synchronized boolean isActive() { return state == 0; }
+
+        synchronized boolean queueResult() {
+            if (state != 0) return false;
+            state = 1;
+            return true;
+        }
+
+        synchronized boolean deliverResult() {
+            if (state != 1) return false;
+            state = 2;
+            return true;
+        }
+
+        synchronized void cancel() { state = 3; }
+    }
+
     private static class CameraHolder implements TextureView.SurfaceTextureListener {
         private final Activity activity;
         private final TextureView textureView;
@@ -303,7 +368,7 @@ public final class QrScanner {
         private final Dialog dialog;
         private final ExecutorService executor = Executors.newSingleThreadExecutor();
         private final AtomicBoolean isAnalyzing = new AtomicBoolean(false);
-        private final AtomicBoolean completed = new AtomicBoolean(false);
+        private final ScanSession session = new ScanSession();
         private Camera camera;
         private int orientationDegrees = 0;
         private int previewWidth = 0;
@@ -336,85 +401,92 @@ public final class QrScanner {
         public void onSurfaceTextureUpdated(SurfaceTexture surface) { }
 
         private void startCamera(SurfaceTexture surface) {
-            new Thread(() -> {
-                int count = Camera.getNumberOfCameras();
-                int cameraId = -1;
-                Camera.CameraInfo info = new Camera.CameraInfo();
-                for (int i = 0; i < count; i++) {
-                    Camera.getCameraInfo(i, info);
-                    if (info.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
-                        cameraId = i;
-                        break;
+            new Thread(() -> openCamera(surface)).start();
+        }
+
+        private synchronized void openCamera(SurfaceTexture surface) {
+            if (!session.isActive()) return;
+            int count = Camera.getNumberOfCameras();
+            int cameraId = -1;
+            Camera.CameraInfo info = new Camera.CameraInfo();
+            for (int i = 0; i < count; i++) {
+                Camera.getCameraInfo(i, info);
+                if (info.facing == Camera.CameraInfo.CAMERA_FACING_BACK) {
+                    cameraId = i;
+                    break;
+                }
+            }
+            if (cameraId == -1 && count > 0) cameraId = 0;
+
+            try {
+                camera = cameraId >= 0 ? Camera.open(cameraId) : Camera.open();
+            } catch (Exception e) {
+                camera = null;
+            }
+
+            if (camera == null) {
+                activity.runOnUiThread(() -> errorView.setVisibility(View.VISIBLE));
+                return;
+            }
+
+            try {
+                int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
+                int degrees = 0;
+                switch (rotation) {
+                    case Surface.ROTATION_0: degrees = 0; break;
+                    case Surface.ROTATION_90: degrees = 90; break;
+                    case Surface.ROTATION_180: degrees = 180; break;
+                    case Surface.ROTATION_270: degrees = 270; break;
+                }
+                if (cameraId >= 0) {
+                    Camera.getCameraInfo(cameraId, info);
+                    orientationDegrees = (info.orientation - degrees + 360) % 360;
+                } else {
+                    orientationDegrees = 90;
+                }
+                camera.setDisplayOrientation(orientationDegrees);
+
+                Camera.Parameters params = camera.getParameters();
+                List<String> focusModes = params.getSupportedFocusModes();
+                if (focusModes != null && focusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
+                    params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+                } else if (focusModes != null && focusModes.contains(Camera.Parameters.FOCUS_MODE_AUTO)) {
+                    params.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
+                }
+
+                List<Camera.Size> sizes = params.getSupportedPreviewSizes();
+                Camera.Size optimal = null;
+                int minDiff = Integer.MAX_VALUE;
+                for (Camera.Size s : sizes) {
+                    int diff = Math.abs(s.width - 1280) + Math.abs(s.height - 720);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        optimal = s;
                     }
                 }
-                if (cameraId == -1 && count > 0) cameraId = 0;
-
-                try {
-                    camera = cameraId >= 0 ? Camera.open(cameraId) : Camera.open();
-                } catch (Exception e) {
-                    camera = null;
+                if (optimal != null) {
+                    params.setPreviewSize(optimal.width, optimal.height);
+                    previewWidth = optimal.width;
+                    previewHeight = optimal.height;
+                } else {
+                    Camera.Size cur = params.getPreviewSize();
+                    previewWidth = cur.width;
+                    previewHeight = cur.height;
                 }
 
-                if (camera == null) {
-                    activity.runOnUiThread(() -> errorView.setVisibility(View.VISIBLE));
-                    return;
-                }
-
-                try {
-                    int rotation = activity.getWindowManager().getDefaultDisplay().getRotation();
-                    int degrees = 0;
-                    switch (rotation) {
-                        case Surface.ROTATION_0: degrees = 0; break;
-                        case Surface.ROTATION_90: degrees = 90; break;
-                        case Surface.ROTATION_180: degrees = 180; break;
-                        case Surface.ROTATION_270: degrees = 270; break;
-                    }
-                    if (cameraId >= 0) {
-                        Camera.getCameraInfo(cameraId, info);
-                        orientationDegrees = (info.orientation - degrees + 360) % 360;
-                    } else {
-                        orientationDegrees = 90;
-                    }
-                    camera.setDisplayOrientation(orientationDegrees);
-
-                    Camera.Parameters params = camera.getParameters();
-                    List<String> focusModes = params.getSupportedFocusModes();
-                    if (focusModes != null && focusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
-                        params.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
-                    } else if (focusModes != null && focusModes.contains(Camera.Parameters.FOCUS_MODE_AUTO)) {
-                        params.setFocusMode(Camera.Parameters.FOCUS_MODE_AUTO);
-                    }
-
-                    List<Camera.Size> sizes = params.getSupportedPreviewSizes();
-                    Camera.Size optimal = null;
-                    int minDiff = Integer.MAX_VALUE;
-                    for (Camera.Size s : sizes) {
-                        int diff = Math.abs(s.width - 1280) + Math.abs(s.height - 720);
-                        if (diff < minDiff) {
-                            minDiff = diff;
-                            optimal = s;
-                        }
-                    }
-                    if (optimal != null) {
-                        params.setPreviewSize(optimal.width, optimal.height);
-                        previewWidth = optimal.width;
-                        previewHeight = optimal.height;
-                    } else {
-                        Camera.Size cur = params.getPreviewSize();
-                        previewWidth = cur.width;
-                        previewHeight = cur.height;
-                    }
-
-                    camera.setParameters(params);
-                    camera.setPreviewTexture(surface);
-                    camera.setPreviewCallback((data, cam) -> {
-                        if (completed.get() || !isAnalyzing.compareAndSet(false, true)) return;
+                camera.setParameters(params);
+                camera.setPreviewTexture(surface);
+                camera.setPreviewCallback((data, cam) -> {
+                    if (!session.isActive() || !isAnalyzing.compareAndSet(false, true)) return;
+                    try {
                         executor.execute(() -> {
                             try {
                                 String text = decodeYUV(data, previewWidth, previewHeight, orientationDegrees);
                                 if (text != null && !text.trim().isEmpty()) {
-                                    if (completed.compareAndSet(false, true)) {
+                                    if (session.queueResult()) {
                                         activity.runOnUiThread(() -> {
+                                            if (!dialog.isShowing() || activity.isFinishing() || activity.isDestroyed()) return;
+                                            if (!session.deliverResult()) return;
                                             textureView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
                                             dialog.dismiss();
                                             onResult.accept(text.trim());
@@ -426,13 +498,15 @@ public final class QrScanner {
                                 isAnalyzing.set(false);
                             }
                         });
-                    });
-                    camera.startPreview();
-                } catch (Exception e) {
-                    stopCamera();
-                    activity.runOnUiThread(() -> errorView.setVisibility(View.VISIBLE));
-                }
-            }).start();
+                    } catch (RejectedExecutionException ignored) {
+                        isAnalyzing.set(false);
+                    }
+                });
+                camera.startPreview();
+            } catch (Exception e) {
+                stopCamera();
+                activity.runOnUiThread(() -> errorView.setVisibility(View.VISIBLE));
+            }
         }
 
         private synchronized void stopCamera() {
@@ -447,7 +521,7 @@ public final class QrScanner {
         }
 
         synchronized void release() {
-            completed.set(true);
+            session.cancel();
             stopCamera();
             executor.shutdownNow();
         }

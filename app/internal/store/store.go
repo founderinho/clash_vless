@@ -76,7 +76,7 @@ type Slot struct {
 // DirectMains returns the slot's enabled mains eligible to serve without a hop (T1).
 func (sl *Slot) DirectMains() []Main {
 	var out []Main
-	for _, m := range sl.Mains {
+	for _, m := range sl.priorityMains() {
 		if m.Enabled && m.AllowNoHop {
 			out = append(out, m)
 		}
@@ -88,7 +88,7 @@ func (sl *Slot) DirectMains() []Main {
 // (T2/T3). Vision exits are excluded — the chain strips their XTLS flow.
 func (sl *Slot) HopMains() []Main {
 	var out []Main
-	for _, m := range sl.Mains {
+	for _, m := range sl.priorityMains() {
 		if m.Enabled && !IsVision(m.URL) {
 			out = append(out, m)
 		}
@@ -229,7 +229,7 @@ type State struct {
 const DefaultUA = "Happ/3.13.0"
 
 // Version is the app version, shown in the TUI header and `version` command.
-const Version = "0.35.0"
+const Version = "0.35.1"
 
 func Dir() (string, error) {
 	base, err := os.UserConfigDir()

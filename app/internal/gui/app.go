@@ -619,17 +619,26 @@ func (d *dashboard) mainRef(slotIndex, mainIndex int) (mainRef, bool) {
 func (d *dashboard) updateMain(ref mainRef, mutate func(slot *store.Slot, indices []int)) bool {
 	slotIndex := d.state.SlotIndexByName(ref.slot)
 	var indices []int
-	if slotIndex >= 0 {
+	valid := slotIndex >= 0 && len(ref.urls) > 0
+	if valid {
+		remaining := make(map[string]int)
 		for _, link := range ref.urls {
-			index := d.state.Slots[slotIndex].MainIndex(link)
-			if index < 0 {
-				indices = nil
+			remaining[link]++
+		}
+		key := mainGroupKey(ref.urls[0])
+		for index, main := range d.state.Slots[slotIndex].Mains {
+			if mainGroupKey(main.URL) != key {
+				continue
+			}
+			if remaining[main.URL] == 0 {
+				valid = false
 				break
 			}
+			remaining[main.URL]--
 			indices = append(indices, index)
 		}
 	}
-	if len(indices) == 0 {
+	if !valid || len(indices) != len(ref.urls) {
 		d.notify("This exit was changed elsewhere; nothing was edited")
 		return false
 	}
