@@ -50,7 +50,13 @@ or a **system-wide TUN** — with automatic tiered failover.
     `tooltipLayer` stacked over the window. It holds only canvas objects, which are never hit targets, so it
     can't steal clicks or hover, and showing a hint doesn't shift the row. A slot is two cards spaced apart, with no
     separator lines: the slot card (title row, a status strip, actions) and a "Final exits" card where each exit is
-    its own bordered card (accent border when in use). Text under names is kept to one line of short tags (`labels.go`):
+    its own bordered card (accent border when in use). Desktop `groupMains` groups VLESS links differing only in
+    server hostname/IP and fragment into one final-exit card; UUID, port and all query parameters must match.
+    Query order/escaping is normalized without resolving DNS. Both addresses remain separate `Slot.Mains`
+    candidates for the engine's direct/hopped failover and TUN bypass; existing state needs no migration.
+    The card lists all addresses, exports every link and applies rename/delete/toggles/priority to the group;
+    mixed address flags appear indeterminate until changed. Group edits capture all URLs and reject a removed
+    member; reordering moves the group together, preserving its address order. Text under names is kept to one line of short tags (`labels.go`):
     a slot shows `slotLiveLine` (a colored state tag such as "T1 Direct · 87 ms", "First hop only", "Down", then the
     route or error) with Port/Hop chips on the right, inside a `tonedBox` tinted by the state; an exit shows its name, then chips for "In use", protocol and
     `mainUsage` ("Direct or hop", "Hop only", red "Unused: Vision needs direct"), then the host. Names and hosts

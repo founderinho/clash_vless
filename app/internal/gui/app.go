@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -590,11 +591,10 @@ func (d *dashboard) renameSlot(slotIndex int) {
 	})
 }
 
-// mainRef names an exit by slot name and URL, so an action confirmed after
-// another client reordered or removed exits still edits the intended one.
+// Capture every address by URL so a concurrent reorder cannot redirect an edit.
 type mainRef struct {
 	slot string
-	url  string
+	urls []string
 }
 
 func (d *dashboard) mainRef(slotIndex, mainIndex int) (mainRef, bool) {
@@ -605,18 +605,36 @@ func (d *dashboard) mainRef(slotIndex, mainIndex int) (mainRef, bool) {
 	if mainIndex < 0 || mainIndex >= len(mains) {
 		return mainRef{}, false
 	}
-	return mainRef{slot: d.state.Slots[slotIndex].Name, url: mains[mainIndex].URL}, true
+	ref := mainRef{slot: d.state.Slots[slotIndex].Name}
+	key := mainGroupKey(mains[mainIndex].URL)
+	for _, main := range mains {
+		if mainGroupKey(main.URL) == key {
+			ref.urls = append(ref.urls, main.URL)
+		}
+	}
+	return ref, true
 }
 
 // updateMain applies mutate to the referenced exit; false if it no longer exists.
-func (d *dashboard) updateMain(ref mainRef, mutate func(slot *store.Slot, index int)) bool {
+func (d *dashboard) updateMain(ref mainRef, mutate func(slot *store.Slot, indices []int)) bool {
 	slotIndex := d.state.SlotIndexByName(ref.slot)
-	if slotIndex < 0 || d.state.Slots[slotIndex].MainIndex(ref.url) < 0 {
+	var indices []int
+	if slotIndex >= 0 {
+		for _, link := range ref.urls {
+			index := d.state.Slots[slotIndex].MainIndex(link)
+			if index < 0 {
+				indices = nil
+				break
+			}
+			indices = append(indices, index)
+		}
+	}
+	if len(indices) == 0 {
 		d.notify("This exit was changed elsewhere; nothing was edited")
 		return false
 	}
 	d.updateSlots(func(slots []store.Slot) {
-		mutate(&slots[slotIndex], slots[slotIndex].MainIndex(ref.url))
+		mutate(&slots[slotIndex], indices)
 	})
 	return true
 }
@@ -628,7 +646,15 @@ func (d *dashboard) removeMain(slotIndex, mainIndex int) {
 	}
 	name := d.state.Slots[slotIndex].Mains[mainIndex].Name
 	d.confirm("Delete exit", "Remove "+name+" from this failover slot?", func() {
-		d.updateMain(ref, func(slot *store.Slot, index int) { slot.RemoveMain(index) })
+		d.updateMain(ref, func(slot *store.Slot, indices []int) {
+			kept := slot.Mains[:0]
+			for i, main := range slot.Mains {
+				if !slices.Contains(indices, i) {
+					kept = append(kept, main)
+				}
+			}
+			slot.Mains = kept
+		})
 	})
 }
 
@@ -637,7 +663,7 @@ func (d *dashboard) moveMain(slotIndex, mainIndex, delta int) {
 	if !ok {
 		return
 	}
-	if d.updateMain(ref, func(slot *store.Slot, index int) { slot.MoveMain(index, index+delta) }) {
+	if d.updateMain(ref, func(slot *store.Slot, indices []int) { moveMainGroup(slot, indices[0], delta) }) {
 		d.notify("Priority updated")
 	}
 }
@@ -653,13 +679,21 @@ func (d *dashboard) renameMain(slotIndex, mainIndex int) {
 			d.notify("Enter an exit name")
 			return
 		}
-		d.updateMain(ref, func(slot *store.Slot, index int) { slot.Mains[index].Name = name })
+		d.updateMain(ref, func(slot *store.Slot, indices []int) {
+			for _, index := range indices {
+				slot.Mains[index].Name = name
+			}
+		})
 	})
 }
 
 func (d *dashboard) setMainFlag(slotIndex, mainIndex int, set func(*store.Main)) {
 	if ref, ok := d.mainRef(slotIndex, mainIndex); ok {
-		d.updateMain(ref, func(slot *store.Slot, index int) { set(&slot.Mains[index]) })
+		d.updateMain(ref, func(slot *store.Slot, indices []int) {
+			for _, index := range indices {
+				set(&slot.Mains[index])
+			}
+		})
 	}
 }
 
